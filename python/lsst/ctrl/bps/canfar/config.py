@@ -87,7 +87,10 @@ class CanfarSiteConfig:
 
 
 def _optional_int(value: Any) -> int | None:
+    # BPS often leaves unset keys as "" rather than null/None.
     if value is None or value == "null":
+        return None
+    if isinstance(value, str) and value.strip() == "":
         return None
     return int(value)
 

@@ -32,6 +32,17 @@ def test_load_site_config_http_timeout():
     assert defaults.http_retries == 3
 
 
+def test_load_site_config_blank_gpu():
+    cfg = load_site_config(
+        {"computeSite": "canfar", "site": {"canfar": {"gpu": ""}}}
+    )
+    assert cfg.gpu is None
+    cfg2 = CanfarSiteConfig.from_mapping({"gpu": "  ", "cores": "", "ram": None})
+    assert cfg2.gpu is None
+    assert cfg2.cores is None
+    assert cfg2.ram is None
+
+
 def test_command_expansion():
     job = SimpleNamespace(
         name="j",
