@@ -36,7 +36,7 @@ pip install -e ".[test]"
 
 Requires the [`canfar`](https://github.com/opencadc/canfar) client (`>=1.5`) and
 a headless-capable LSST image (for example
-`images.canfar.net/lsst/science_pipeline:d_latest`). Confirm with:
+`images.canfar.net/lsst/sciplat-lab:latest`). Confirm with:
 
 ```bash
 canfar login cadc
@@ -50,7 +50,7 @@ wmsServiceClass: lsst.ctrl.bps.canfar.CanfarService
 computeSite: canfar
 site:
   canfar:
-    image: images.canfar.net/lsst/science_pipeline:d_latest
+    image: images.canfar.net/lsst/sciplat-lab:latest_daily
     nWorkers: 8
     cores: 1
     ram: 4
@@ -123,7 +123,7 @@ export BPS_CANFAR_SUBMIT_PATH=/arc/projects/YOUR_PROJECT/bps-smoke/$USER
 
 After a tagged release, bake the wheel into the LSST science platform
 image (for example
-`science-containers/Dockerfiles/lsst-science-platform/Dockerfile`) so
+`science-containers/Dockerfiles/sciplat-lab/Dockerfile`) so
 notebook / terminal users get the plugin without a manual `pip install`:
 
 ```dockerfile
@@ -132,7 +132,7 @@ RUN source /opt/lsst/software/stack/loadLSST.bash \
       "https://github.com/ijiraq/ctrl_bps_canfar/releases/download/v0.1.0/lsst_ctrl_bps_canfar-0.1.0-py3-none-any.whl"
 ```
 
-Prefer documenting the existing headless `lsst/science_pipeline` image for
+Prefer documenting the existing headless `lsst/sciplat-lab` image for
 workers; the interactive sciplat-lab image can remain notebook-only. Auth
 for workers is the same as qrunners: `canfar login cadc` writes
 `~/.ssl/cadcproxy.pem`, which headless sessions inherit from the mounted

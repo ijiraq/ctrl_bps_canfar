@@ -6,8 +6,8 @@ computeSite: canfar
 
 site:
   canfar:
-    image: images.canfar.net/lsst/science_pipeline:d_latest
-    nWorkers: 8
+    image: images.canfar.net/lsst/sciplat-lab:latest
+    nWorkers: 1
     cores: 1
     ram: 4
     idleTimeout: 86900

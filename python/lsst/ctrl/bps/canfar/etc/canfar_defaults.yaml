@@ -7,7 +7,7 @@ computeSite: canfar
 site:
   canfar:
     # Must be registered for Skaha kind=headless
-    image: images.canfar.net/lsst/science_pipeline:d_latest
+    image: images.canfar.net/lsst/sciplat-lab:latest_daily
     nWorkers: 8
     cores: 1
     ram: 4

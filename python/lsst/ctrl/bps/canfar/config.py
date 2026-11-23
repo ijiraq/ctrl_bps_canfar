@@ -16,7 +16,7 @@ QUEUE_SUBDIRS = ("payloads", "queue", "processing", "processed", "failed", "logs
 class CanfarSiteConfig:
     """Settings under ``site.<computeSite>`` for CanfarService."""
 
-    image: str = "images.canfar.net/lsst/science_pipeline:d_latest"
+    image: str = "images.canfar.net/lsst/sciplat-lab:latest_daily"
     n_workers: int = 8
     cores: int | None = 1
     ram: int | None = 4

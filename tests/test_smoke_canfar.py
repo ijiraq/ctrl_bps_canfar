@@ -4,7 +4,7 @@ Skipped unless ``BPS_CANFAR_SMOKE=1``. Requires:
 
 - ``canfar login cadc`` already done
 - ``BPS_CANFAR_SUBMIT_PATH`` under ``/arc`` (shared with headless workers)
-- a headless image (default: science_pipeline:d_latest)
+- a headless image (default: lsst/sciplat-lab:latest)
 
 Runs a one-job DAG with a single worker, then tears the session down.
 """
@@ -37,7 +37,7 @@ def test_live_one_worker_tiny_graph():
 
     image = os.environ.get(
         "BPS_CANFAR_IMAGE",
-        "images.canfar.net/lsst/science_pipeline:d_latest",
+        "images.canfar.net/lsst/sciplat-lab:latest_daily",
     )
     site = CanfarSiteConfig(
         image=image,
