@@ -1,0 +1,16 @@
+# Example BPS site stanza for CANFAR. Merge into your submit YAML.
+wmsServiceClass: lsst.ctrl.bps.canfar.CanfarService
+computeSite: canfar
+# submitPath must be on /arc (or other storage mounted in headless workers)
+# submitPath: /arc/projects/MyProject/bps/{outdir}
+
+site:
+  canfar:
+    image: images.canfar.net/lsst/science_pipeline:d_latest
+    nWorkers: 8
+    cores: 1
+    ram: 4
+    idleTimeout: 86900
+    pollInterval: 30
+    replaceWorkers: true
+    reclaimGraceSeconds: 120

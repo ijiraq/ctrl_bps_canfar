@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lsst-ctrl-bps-canfar"
+version = "0.1.0"
+description = "CANFAR Skaha WMS plugin for lsst-ctrl-bps (warm headless workers + /arc queue)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [
+    { name = "JJ Kavelaars", email = "JJ.Kavelaars@nrc-cnrc.gc.ca" },
+]
+keywords = ["lsst", "bps", "canfar", "skaha"]
+dependencies = [
+    "canfar>=1.5",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+# lsst-ctrl-bps is provided by the Science Pipelines stack in practice.
+bps = ["lsst-ctrl-bps"]
+test = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/ijiraq/ctrl_bps_canfar"
+Source = "https://github.com/ijiraq/ctrl_bps_canfar"
+
+[project.scripts]
+bps-canfar-worker = "lsst.ctrl.bps.canfar.worker:main"
+bps-canfar-orchestrate = "lsst.ctrl.bps.canfar.orchestrator:main"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.setuptools.package-data]
+"lsst.ctrl.bps.canfar" = ["etc/*.yaml", "scripts/*.sh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["python"]

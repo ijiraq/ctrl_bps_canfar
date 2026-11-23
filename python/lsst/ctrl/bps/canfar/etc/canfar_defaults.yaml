@@ -1,0 +1,25 @@
+# Defaults for lsst.ctrl.bps.canfar.CanfarService
+#
+# Override under site.<computeSite> in the BPS submit YAML.
+
+computeSite: canfar
+
+site:
+  canfar:
+    # Must be registered for Skaha kind=headless
+    image: images.canfar.net/lsst/science_pipeline:d_latest
+    nWorkers: 8
+    cores: 1
+    ram: 4
+    # Seconds with an empty queue before a worker exits.
+    idleTimeout: 86900
+    # Orchestrator / worker poll interval (seconds).
+    pollInterval: 30
+    # Optional fixed GPU count; omit for none.
+    # gpu: null
+    # Worker name prefix (letters, digits, hyphens only).
+    workerNamePrefix: bps-canfar
+    # When true, replace workers that exit while DAG work remains.
+    replaceWorkers: true
+    # Seconds to wait before reclaiming a job stuck in processing/ after its worker dies.
+    reclaimGraceSeconds: 120
