@@ -1,0 +1,66 @@
+# Equivalent of the interactive pipetask for one HSC visit/detector on CANFAR.
+#
+# Interactive counterpart:
+#   pipetask --log-level INFO run --register-dataset-types \
+#     -b ${BUTLER_DIR} \
+#     -i HSC/raw/all,refcats,HSC/calib \
+#     -o NH/singleVisitImages/${day_obs} \
+#     -p ${PIPE_DIR}/NewHorizons.yaml \
+#     -d "instrument='HSC' AND ... AND day_obs=${day_obs} AND detector=${detector} AND visit=263634"
+#
+# Usage (on notebook3, after canfar login + setup of ctrl_bps_canfar):
+#   export BUTLER_DIR=/arc/projects/NewHorizons/clean_horizons/BUTLER
+#   export PIPE_DIR=/arc/projects/NewHorizons/lsst_deep_mop/pipelines
+#   export day_obs=20210905
+#   export detector=50
+#   bps submit examples/nh_single_visit.yaml
+#
+# Or override on the CLI:
+#   bps submit examples/nh_single_visit.yaml \
+#     -b "$BUTLER_DIR" -i HSC/raw/all,refcats,HSC/calib \
+#     -o "NH/singleVisitImages/${day_obs}" \
+#     -d "instrument='HSC' AND visit.observation_reason='science' AND detector.purpose='SCIENCE' AND NOT detector=9 AND day_obs=${day_obs} AND detector=${detector} AND visit=263634"
+
+# WMS plugin + warm-pool settings (or: includeConfigs: [examples/canfar_site.yaml])
+wmsServiceClass: lsst.ctrl.bps.canfar.CanfarService
+computeSite: canfar
+
+pipelineYaml: "${PIPE_DIR}/NewHorizons.yaml"
+
+project: NewHorizons
+campaign: singleVisitImages
+
+# Queue + logs must live on /arc so headless workers can see them.
+submitPath: /arc/projects/NewHorizons/bps/{operator}/{payloadName}/{timestamp}
+
+# Per-quantum resources (tune once you see real memory use).
+requestCpus: 1
+requestMemory: 4096
+
+payload:
+  payloadName: svi_{day_obs}_v263634_d{detector}
+  butlerConfig: ${BUTLER_DIR}
+  inCollection: HSC/raw/all,refcats,HSC/calib
+  # Same as pipetask -o (BPS would otherwise use u/{operator}/{payloadName}).
+  output: NH/singleVisitImages/{day_obs}
+  dataQuery: >-
+    instrument='HSC'
+    AND visit.observation_reason='science'
+    AND detector.purpose='SCIENCE'
+    AND NOT detector=9
+    AND day_obs={day_obs}
+    AND detector={detector}
+    AND visit=263634
+
+# Template vars used in payloadName / output / dataQuery.
+day_obs: "20210905"
+detector: "50"
+
+site:
+  canfar:
+    image: images.canfar.net/lsst/sciplat-lab:latest_daily
+    nWorkers: 1
+    cores: 2
+    ram: 8
+    httpTimeout: 180
+    httpRetries: 4
