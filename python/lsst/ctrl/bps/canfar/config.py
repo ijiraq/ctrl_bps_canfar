@@ -25,7 +25,11 @@ class CanfarSiteConfig:
     poll_interval: int = 30
     worker_name_prefix: str = "bps-canfar"
     replace_workers: bool = True
+    # Orphan processing/ with no worker heartbeat claiming it.
     reclaim_grace_seconds: int = 120
+    # Stall detection: cpuCoresInUse / requestedCPUCores below this for stall_polls.
+    stall_cpu_fraction: float = 0.01
+    stall_polls: int = 5
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> CanfarSiteConfig:
@@ -59,6 +63,15 @@ class CanfarSiteConfig:
                     "reclaimGraceSeconds",
                     data.get("reclaim_grace_seconds", cls.reclaim_grace_seconds),
                 )
+            ),
+            stall_cpu_fraction=float(
+                data.get(
+                    "stallCpuFraction",
+                    data.get("stall_cpu_fraction", cls.stall_cpu_fraction),
+                )
+            ),
+            stall_polls=int(
+                data.get("stallPolls", data.get("stall_polls", cls.stall_polls))
             ),
         )
 
@@ -110,6 +123,8 @@ def load_site_config(config: Any = None, compute_site: str | None = None) -> Can
             "workerNamePrefix",
             "replaceWorkers",
             "reclaimGraceSeconds",
+            "stallCpuFraction",
+            "stallPolls",
         ):
             value = _get(config, key)
             if value is not None and key not in site_overrides:

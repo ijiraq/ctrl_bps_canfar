@@ -14,3 +14,5 @@ site:
     pollInterval: 30
     replaceWorkers: true
     reclaimGraceSeconds: 120
+    stallCpuFraction: 0.01
+    stallPolls: 5

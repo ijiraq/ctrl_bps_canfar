@@ -113,6 +113,8 @@ class CanfarWorkflow(BaseWmsWorkflow):
                 "workerNamePrefix": site.worker_name_prefix,
                 "replaceWorkers": site.replace_workers,
                 "reclaimGraceSeconds": site.reclaim_grace_seconds,
+                "stallCpuFraction": site.stall_cpu_fraction,
+                "stallPolls": site.stall_polls,
             },
         }
         # Preserve useful BPS labels when present.
@@ -169,6 +171,8 @@ class CanfarWorkflow(BaseWmsWorkflow):
                         "workerNamePrefix": site.worker_name_prefix,
                         "replaceWorkers": site.replace_workers,
                         "reclaimGraceSeconds": site.reclaim_grace_seconds,
+                        "stallCpuFraction": site.stall_cpu_fraction,
+                        "stallPolls": site.stall_polls,
                     },
                 },
                 sort_keys=False,

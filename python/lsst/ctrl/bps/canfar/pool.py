@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .config import CanfarSiteConfig, sanitize_name
+from .queue import QueueLayout
 
 _LOG = logging.getLogger(__name__)
+
+_TERMINAL = {"completed", "succeeded", "failed", "deleted", "error"}
 
 
 class SessionClient(Protocol):
@@ -19,6 +22,32 @@ class SessionClient(Protocol):
     def info(self, ids: list[str], **kwargs: Any) -> list[dict[str, Any]]: ...
 
     def destroy(self, ids: list[str], **kwargs: Any) -> Any: ...
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def cpu_utilization(info: dict[str, Any]) -> float | None:
+    """Return ``cpuCoresInUse / requestedCPUCores``, or None if requested is missing/zero."""
+    requested = _as_float(
+        info.get("requestedCPUCores")
+        if info.get("requestedCPUCores") is not None
+        else info.get("requestedCpuCores"),
+        default=0.0,
+    )
+    if requested <= 0:
+        return None
+    in_use = _as_float(
+        info.get("cpuCoresInUse") if info.get("cpuCoresInUse") is not None else info.get("cpuCores"),
+        default=0.0,
+    )
+    return in_use / requested
 
 
 @dataclass
@@ -30,6 +59,11 @@ class WorkerPool:
     session: SessionClient
     worker_script: Path
     session_ids: list[str] = field(default_factory=list)
+    worker_name_by_session: dict[str, str] = field(default_factory=dict)
+    # Consecutive low-CPU samples per session (after the post-claim grace poll).
+    low_cpu_counts: dict[str, int] = field(default_factory=dict)
+    # Sessions already past the first post-claim poll.
+    seen_claim_poll: set[str] = field(default_factory=set)
 
     def desired_size(self) -> int:
         return max(0, int(self.site.n_workers))
@@ -42,6 +76,8 @@ class WorkerPool:
         created: list[str] = []
         script = shlex.quote(str(self.worker_script))
         submit = shlex.quote(str(self.submit_path))
+        layout = QueueLayout(self.submit_path)
+        layout.ensure()
         for index in range(need):
             ordinal = len(self.session_ids) + index + 1
             name = sanitize_name(f"{self.site.worker_name_prefix}-{self.submit_path.name}-{ordinal}")
@@ -70,31 +106,136 @@ class WorkerPool:
             _LOG.info("creating worker %s", name)
             ids = self.session.create(**kwargs)
             created.extend(ids)
-            self.session_ids.extend(ids)
+            for sid in ids:
+                self.session_ids.append(sid)
+                self.worker_name_by_session[sid] = name
+                layout.worker_session_path(name).write_text(f"{sid}\n", encoding="utf-8")
         return created
 
-    def alive_ids(self) -> list[str]:
+    def _session_infos(self) -> dict[str, dict[str, Any]]:
         if not self.session_ids:
-            return []
+            return {}
         try:
             infos = self.session.info(list(self.session_ids))
         except Exception as exc:  # pragma: no cover - network failures
             _LOG.warning("worker info failed: %s", exc)
-            return list(self.session_ids)
-        alive: list[str] = []
-        status_by_id = {}
+            return {}
+        by_id: dict[str, dict[str, Any]] = {}
         for item in infos or []:
             sid = str(item.get("id") or item.get("sessionId") or "")
-            status = str(item.get("status") or item.get("state") or "")
             if sid:
-                status_by_id[sid] = status
+                by_id[sid] = item
+                name = item.get("name")
+                if name:
+                    self.worker_name_by_session.setdefault(sid, str(name))
+        return by_id
+
+    def alive_ids(self) -> list[str]:
+        if not self.session_ids:
+            return []
+        status_by_id = self._session_infos()
+        if not status_by_id and self.session_ids:
+            # info failed; keep current list
+            return list(self.session_ids)
+        alive: list[str] = []
         for sid in self.session_ids:
-            status = status_by_id.get(sid, "")
-            if status.lower() in {"completed", "succeeded", "failed", "deleted", "error"}:
+            item = status_by_id.get(sid) or {}
+            status = str(item.get("status") or item.get("state") or "")
+            if status.lower() in _TERMINAL:
+                self.low_cpu_counts.pop(sid, None)
+                self.seen_claim_poll.discard(sid)
+                self.worker_name_by_session.pop(sid, None)
                 continue
             alive.append(sid)
         self.session_ids = alive
         return list(self.session_ids)
+
+    def _session_for_owner(self, owner: dict[str, Any]) -> str | None:
+        sid = owner.get("sessionId")
+        if sid and str(sid) in self.session_ids:
+            return str(sid)
+        worker_id = owner.get("workerId")
+        if not worker_id:
+            return None
+        for sid, name in self.worker_name_by_session.items():
+            if name == worker_id and sid in self.session_ids:
+                return sid
+        return None
+
+    def reclaim_stalled_jobs(self, layout: QueueLayout) -> list[str]:
+        """Destroy sessions whose claimed job stays under the CPU fraction for ``stallPolls``.
+
+        Skips the first orchestrator poll after a claim (``seen_claim_poll``), then requires
+        ``stallPolls`` consecutive samples with
+        ``cpuCoresInUse / requestedCPUCores < stallCpuFraction``.
+        """
+        infos = self._session_infos()
+        reclaimed: list[str] = []
+        active_sessions: set[str] = set()
+
+        for path in layout.list_json(layout.processing):
+            job = layout.read_payload(path)
+            owner = layout.owner_for_processing_job(job.name)
+            if not owner:
+                continue
+            sid = self._session_for_owner(owner)
+            if not sid:
+                continue
+            active_sessions.add(sid)
+            info = infos.get(sid)
+            if not info:
+                continue
+
+            if sid not in self.seen_claim_poll:
+                # At least one full poll cycle after claim before counting.
+                self.seen_claim_poll.add(sid)
+                self.low_cpu_counts[sid] = 0
+                _LOG.debug("stall grace poll for session %s job %s", sid, job.name)
+                continue
+
+            ratio = cpu_utilization(info)
+            if ratio is None:
+                continue
+            if ratio < self.site.stall_cpu_fraction:
+                self.low_cpu_counts[sid] = self.low_cpu_counts.get(sid, 0) + 1
+                _LOG.info(
+                    "low CPU %.4f for session %s job %s (%s/%s)",
+                    ratio,
+                    sid,
+                    job.name,
+                    self.low_cpu_counts[sid],
+                    self.site.stall_polls,
+                )
+            else:
+                self.low_cpu_counts[sid] = 0
+
+            if self.low_cpu_counts.get(sid, 0) < self.site.stall_polls:
+                continue
+
+            _LOG.warning(
+                "reclaiming stalled job %s (session %s, cpu ratio stayed < %.4f)",
+                job.name,
+                sid,
+                self.site.stall_cpu_fraction,
+            )
+            try:
+                self.session.destroy([sid])
+            except Exception as exc:
+                _LOG.warning("destroy failed for stalled session %s: %s", sid, exc)
+            if sid in self.session_ids:
+                self.session_ids.remove(sid)
+            self.worker_name_by_session.pop(sid, None)
+            self.low_cpu_counts.pop(sid, None)
+            self.seen_claim_poll.discard(sid)
+            if layout.reclaim_to_queue(job.name) is not None:
+                reclaimed.append(job.name)
+
+        # Drop counters for sessions that no longer hold a claim.
+        for sid in list(self.low_cpu_counts):
+            if sid not in active_sessions:
+                self.low_cpu_counts.pop(sid, None)
+                self.seen_claim_poll.discard(sid)
+        return reclaimed
 
     def maintain(self, *, work_remaining: bool) -> list[str]:
         """Reap finished workers; optionally replace up to nWorkers while work remains."""
@@ -112,6 +253,9 @@ class WorkerPool:
             self.session.destroy(ids)
         finally:
             self.session_ids = []
+            self.worker_name_by_session.clear()
+            self.low_cpu_counts.clear()
+            self.seen_claim_poll.clear()
 
 
 def default_session() -> Any:

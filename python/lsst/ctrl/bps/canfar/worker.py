@@ -6,13 +6,22 @@ import argparse
 import logging
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 from .queue import QueueLayout
 
 _LOG = logging.getLogger(__name__)
+
+
+def _resolve_session_id(layout: QueueLayout, worker_id: str) -> str | None:
+    env = os.environ.get("BPS_CANFAR_SESSION_ID")
+    if env:
+        return env
+    path = layout.worker_session_path(worker_id)
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip() or None
+    return None
 
 
 def run_worker(
@@ -26,12 +35,20 @@ def run_worker(
     layout = QueueLayout(submit_path)
     layout.ensure()
     worker_id = worker_id or os.environ.get("BPS_CANFAR_WORKER_ID") or f"pid-{os.getpid()}"
-    heartbeat = layout.workers / f"{worker_id}.alive"
+    session_id = _resolve_session_id(layout, worker_id)
     last_work = time.time()
     _LOG.info("worker %s watching %s (idleTimeout=%ss)", worker_id, layout.root, idle_timeout)
 
+    def heartbeat(current_job: str | None = None, claimed_at: float | None = None) -> None:
+        layout.write_worker_heartbeat(
+            worker_id,
+            current_job=current_job,
+            claimed_at=claimed_at,
+            session_id=session_id,
+        )
+
     while True:
-        heartbeat.write_text(f"{time.time()}\n", encoding="utf-8")
+        heartbeat()
         if layout.cancel_requested():
             _LOG.info("worker %s saw CANCEL; exiting", worker_id)
             return 0
@@ -45,7 +62,15 @@ def run_worker(
             continue
 
         processing_path, job = claimed
-        last_work = time.time()
+        claimed_at = time.time()
+        last_work = claimed_at
+        layout.write_claim_owner(
+            job.name,
+            worker_id=worker_id,
+            session_id=session_id,
+            claimed_at=claimed_at,
+        )
+        heartbeat(current_job=job.name, claimed_at=claimed_at)
         log_path = layout.log_path_for(job.name)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _LOG.info("worker %s running %s -> %s", worker_id, job.name, log_path)
@@ -79,6 +104,7 @@ def run_worker(
             _LOG.exception("worker %s crashed while running %s", worker_id, job.name)
             if processing_path.exists():
                 layout.mark_failed(processing_path)
+        heartbeat()
         last_work = time.time()
 
 

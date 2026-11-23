@@ -58,6 +58,8 @@ site:
     pollInterval: 30
     replaceWorkers: true
     reclaimGraceSeconds: 120
+    stallCpuFraction: 0.01
+    stallPolls: 5
 ```
 
 `submitPath` must be on storage visible to both the submit host and the
@@ -75,8 +77,15 @@ bps cancel --id /arc/path/to/submitPath
 `bps submit` blocks in the orchestrator until the DAG finishes or is
 cancelled (MVP). Workers that sit idle longer than `idleTimeout` exit; while
 DAG work remains, `replaceWorkers: true` starts replacements up to
-`nWorkers`. Unexpected worker death leaves a job in `processing/`; after
-`reclaimGraceSeconds` it is moved back to `queue/`.
+`nWorkers`.
+
+Stall detection uses Skaha `Session.info`: after one poll grace following a
+claim, if `cpuCoresInUse / requestedCPUCores` stays below `stallCpuFraction`
+(default 1%) for `stallPolls` consecutive polls (default 5), the orchestrator
+destroys that session and moves the job back to `queue/`. Workers publish the
+active job name in `workers/<id>.alive` (and a `processing/<job>.owner`
+sidecar) so claims can be mapped to sessions. Jobs left in `processing/` with
+no owning heartbeat are reclaimed after `reclaimGraceSeconds`.
 
 ## Queue layout
 
@@ -90,7 +99,8 @@ Under each `submitPath`:
 | `processed/` | Succeeded |
 | `failed/` | Failed |
 | `logs/` | Per-job logs |
-| `workers/` | Worker heartbeats |
+| `workers/` | Worker heartbeats (`*.alive` JSON: `currentJob`, `sessionId`) |
+| `processing/<job>.owner` | Claim ownership sidecar (`workerId`, `sessionId`, `claimedAt`) |
 | `dag.json` / `run.yaml` / `state.json` | DAG, config snapshot, report state |
 | `run_worker.sh` | Copied entrypoint for headless sessions |
 

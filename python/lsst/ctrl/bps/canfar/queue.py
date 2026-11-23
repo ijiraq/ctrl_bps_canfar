@@ -214,32 +214,177 @@ class QueueLayout:
 
     def mark_processed(self, processing_path: Path) -> Path:
         dest = self.processed / processing_path.name
+        self.clear_claim_owner(processing_path.stem)
         os.rename(processing_path, dest)
         return dest
 
     def mark_failed(self, processing_path: Path) -> Path:
         dest = self.failed / processing_path.name
+        self.clear_claim_owner(processing_path.stem)
         os.rename(processing_path, dest)
         return dest
 
-    def reclaim_stale_processing(self, *, grace_seconds: int) -> list[str]:
-        """Move orphaned ``processing/`` jobs older than ``grace_seconds`` back to ``queue/``."""
+    def worker_alive_path(self, worker_id: str) -> Path:
+        return self.workers / f"{sanitize_name(worker_id)}.alive"
+
+    def worker_session_path(self, worker_id: str) -> Path:
+        return self.workers / f"{sanitize_name(worker_id)}.session"
+
+    def claim_owner_path(self, job_name: str) -> Path:
+        return self.processing / f"{sanitize_name(job_name)}.owner"
+
+    def write_worker_heartbeat(
+        self,
+        worker_id: str,
+        *,
+        current_job: str | None = None,
+        claimed_at: float | None = None,
+        session_id: str | None = None,
+    ) -> Path:
+        """Write ``workers/<id>.alive`` JSON used to map sessions to claimed jobs."""
+        self.workers.mkdir(parents=True, exist_ok=True)
+        path = self.worker_alive_path(worker_id)
+        payload = {
+            "workerId": worker_id,
+            "sessionId": session_id,
+            "currentJob": current_job,
+            "claimedAt": claimed_at,
+            "updatedAt": time.time(),
+        }
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return path
+
+    def read_worker_heartbeat(self, path: Path) -> dict[str, Any] | None:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not text:
+            return None
+        # Legacy plain-timestamp heartbeats.
+        if not text.startswith("{"):
+            try:
+                return {
+                    "workerId": path.stem,
+                    "sessionId": None,
+                    "currentJob": None,
+                    "claimedAt": None,
+                    "updatedAt": float(text.splitlines()[0]),
+                }
+            except ValueError:
+                return None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data
+
+    def iter_worker_heartbeats(self) -> Iterator[dict[str, Any]]:
+        if not self.workers.is_dir():
+            return
+        for path in sorted(self.workers.glob("*.alive")):
+            data = self.read_worker_heartbeat(path)
+            if data:
+                yield data
+
+    def write_claim_owner(
+        self,
+        job_name: str,
+        *,
+        worker_id: str,
+        session_id: str | None = None,
+        claimed_at: float | None = None,
+    ) -> Path:
+        """Record which worker/session owns a job in ``processing/``."""
+        path = self.claim_owner_path(job_name)
+        payload = {
+            "job": job_name,
+            "workerId": worker_id,
+            "sessionId": session_id,
+            "claimedAt": claimed_at if claimed_at is not None else time.time(),
+        }
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return path
+
+    def read_claim_owner(self, job_name: str) -> dict[str, Any] | None:
+        path = self.claim_owner_path(job_name)
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def clear_claim_owner(self, job_name: str) -> None:
+        path = self.claim_owner_path(job_name)
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    def owner_for_processing_job(self, job_name: str) -> dict[str, Any] | None:
+        """Resolve owner from claim sidecar, else from worker heartbeats."""
+        owner = self.read_claim_owner(job_name)
+        if owner and (owner.get("workerId") or owner.get("sessionId")):
+            return owner
+        for hb in self.iter_worker_heartbeats():
+            if hb.get("currentJob") == job_name:
+                return {
+                    "job": job_name,
+                    "workerId": hb.get("workerId"),
+                    "sessionId": hb.get("sessionId"),
+                    "claimedAt": hb.get("claimedAt"),
+                }
+        return None
+
+    def reclaim_to_queue(self, job_name: str) -> Path | None:
+        """Move a ``processing/`` job back to ``queue/`` and clear its owner sidecar."""
+        filename = f"{sanitize_name(job_name)}.json"
+        src = self.processing / filename
+        if not src.is_file():
+            return None
+        dest = self.queue / filename
+        try:
+            os.rename(src, dest)
+        except OSError as exc:
+            _LOG.warning("failed to reclaim %s: %s", src, exc)
+            return None
+        self.clear_claim_owner(job_name)
+        return dest
+
+    def reclaim_orphan_processing(self, *, grace_seconds: int) -> list[str]:
+        """Reclaim ``processing/`` jobs with no owning heartbeat older than ``grace_seconds``."""
         now = time.time()
+        claimed_jobs = {
+            str(hb.get("currentJob"))
+            for hb in self.iter_worker_heartbeats()
+            if hb.get("currentJob")
+        }
         reclaimed: list[str] = []
         for path in self.list_json(self.processing):
+            job = self.read_payload(path)
+            if job.name in claimed_jobs:
+                continue
+            owner = self.read_claim_owner(job.name)
+            if owner and owner.get("workerId"):
+                # Owner sidecar exists but heartbeat gone — still wait for grace on claim mtime.
+                pass
             age = now - path.stat().st_mtime
             if age < grace_seconds:
                 continue
-            dest = self.queue / path.name
-            try:
-                os.rename(path, dest)
-            except OSError as exc:
-                _LOG.warning("failed to reclaim %s: %s", path, exc)
+            if self.reclaim_to_queue(job.name) is None:
                 continue
-            job = self.read_payload(dest)
             reclaimed.append(job.name)
-            _LOG.warning("reclaimed stale processing job %s (age %.0fs)", job.name, age)
+            _LOG.warning("reclaimed orphan processing job %s (age %.0fs)", job.name, age)
         return reclaimed
+
+    def reclaim_stale_processing(self, *, grace_seconds: int) -> list[str]:
+        """Backward-compatible alias for orphan reclaim (mtime + no heartbeat owner)."""
+        return self.reclaim_orphan_processing(grace_seconds=grace_seconds)
 
     def iter_terminal(self) -> Iterator[tuple[str, str]]:
         for path in self.list_json(self.processed):

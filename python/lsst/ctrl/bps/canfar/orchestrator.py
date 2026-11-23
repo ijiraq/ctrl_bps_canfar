@@ -125,7 +125,8 @@ class Orchestrator:
                 self.pool.destroy_all()
                 return self.write_state()
 
-            self.layout.reclaim_stale_processing(grace_seconds=self.site.reclaim_grace_seconds)
+            self.pool.reclaim_stalled_jobs(self.layout)
+            self.layout.reclaim_orphan_processing(grace_seconds=self.site.reclaim_grace_seconds)
             self.mark_pruned_from_failures()
             self.enqueue_ready()
             remaining = self.work_remaining()

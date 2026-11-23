@@ -35,7 +35,7 @@ def test_two_workers_cannot_claim_same_job(tmp_path: Path):
     assert second is None
 
 
-def test_reclaim_stale_processing(tmp_path: Path):
+def test_reclaim_orphan_processing(tmp_path: Path):
     layout = QueueLayout(tmp_path)
     layout.ensure()
     job = JobPayload(name="stuck", label="x", command="true")
@@ -45,10 +45,25 @@ def test_reclaim_stale_processing(tmp_path: Path):
     assert claimed is not None
     path, _ = claimed
     old = time.time() - 999
-    # Bump mtime into the past.
+    # Bump mtime into the past; no worker heartbeat claims this job.
     import os
 
     os.utime(path, (old, old))
-    reclaimed = layout.reclaim_stale_processing(grace_seconds=10)
+    reclaimed = layout.reclaim_orphan_processing(grace_seconds=10)
     assert reclaimed == ["stuck"]
     assert layout.job_location("stuck") == "queue"
+
+
+def test_heartbeat_maps_current_job(tmp_path: Path):
+    layout = QueueLayout(tmp_path)
+    layout.ensure()
+    layout.write_worker_heartbeat(
+        "w1",
+        current_job="job-a",
+        claimed_at=time.time(),
+        session_id="sess-1",
+    )
+    owner = layout.owner_for_processing_job("job-a")
+    assert owner is not None
+    assert owner["workerId"] == "w1"
+    assert owner["sessionId"] == "sess-1"

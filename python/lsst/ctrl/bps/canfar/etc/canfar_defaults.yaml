@@ -21,5 +21,9 @@ site:
     workerNamePrefix: bps-canfar
     # When true, replace workers that exit while DAG work remains.
     replaceWorkers: true
-    # Seconds to wait before reclaiming a job stuck in processing/ after its worker dies.
+    # Orphan processing/ with no worker heartbeat claiming the job.
     reclaimGraceSeconds: 120
+    # Stall: cpuCoresInUse/requestedCPUCores below this for stallPolls consecutive polls.
+    # First poll after claim is skipped; then stallPolls low samples trigger reclaim+destroy.
+    stallCpuFraction: 0.01
+    stallPolls: 5
