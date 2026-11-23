@@ -1,4 +1,6 @@
-# EUPS table for lsst_deep_mop (NH deep MOP + SSO injection)
+# EUPS table for ctrl_bps_canfar (CANFAR Skaha BPS plugin).
+# Do not add python/lsst/{,ctrl/,ctrl/bps/}__init__.py — those would
+# shadow ctrl_bps on PYTHONPATH and break ``bps`` CLI imports.
 setupRequired(ctrl_bps)
 
 envPrepend(PYTHONPATH, ${PRODUCT_DIR}/python)

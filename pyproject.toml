@@ -33,6 +33,10 @@ bps-canfar-orchestrate = "lsst.ctrl.bps.canfar.orchestrator:main"
 
 [tool.setuptools.packages.find]
 where = ["python"]
+include = ["lsst*"]
+# Parent lsst/ctrl/bps dirs are PEP 420 namespaces (no __init__.py) so we
+# do not shadow the real ctrl_bps package when prepended on PYTHONPATH.
+namespaces = true
 
 [tool.setuptools.package-data]
 "lsst.ctrl.bps.canfar" = ["etc/*.yaml", "scripts/*.sh"]

@@ -28,11 +28,22 @@ works):
 pip install "https://github.com/ijiraq/ctrl_bps_canfar/releases/download/v0.1.0/lsst_ctrl_bps_canfar-0.1.0-py3-none-any.whl"
 ```
 
-From a checkout:
+From a checkout (EUPS):
+
+```bash
+setup -k -r .
+# or: export PYTHONPATH="$PWD/python:$PYTHONPATH"
+```
+
+Or with pip:
 
 ```bash
 pip install -e ".[test]"
 ```
+
+Do not add `__init__.py` under `python/lsst/`, `python/lsst/ctrl/`, or
+`python/lsst/ctrl/bps/` — those shadow the real `ctrl_bps` package (same
+layout as `ctrl_bps_htcondor`).
 
 Requires the [`canfar`](https://github.com/opencadc/canfar) client (`>=1.5`) and
 a headless-capable LSST image (for example
