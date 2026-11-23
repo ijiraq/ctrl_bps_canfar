@@ -8,12 +8,11 @@ IDLE_TIMEOUT=${2:-${BPS_CANFAR_IDLE_TIMEOUT:-86900}}
 POLL_INTERVAL=${3:-${BPS_CANFAR_POLL_INTERVAL:-30}}
 WORKER_ID=${4:-${BPS_CANFAR_WORKER_ID:-${REPLICA_ID:-$$}}}
 
+
 export SHELL=${SHELL:-/bin/bash}
-if [[ -f /opt/lsst/software/stack/loadLSST.bash ]]; then
-  # shellcheck disable=SC1091
-  . /opt/lsst/software/stack/loadLSST.bash
-  setup lsst_distrib >/dev/null 2>&1 || true
-fi
+set +u
+. /arc/projects/NewHorizons/env.sh
+set -u
 
 export BPS_CANFAR_WORKER_ID="${WORKER_ID}"
 export BPS_CANFAR_IDLE_TIMEOUT="${IDLE_TIMEOUT}"
