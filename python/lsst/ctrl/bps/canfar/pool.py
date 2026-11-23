@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import shlex
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, TypeVar
 
 from .config import CanfarSiteConfig, sanitize_name
 from .queue import QueueLayout
@@ -14,6 +15,11 @@ from .queue import QueueLayout
 _LOG = logging.getLogger(__name__)
 
 _TERMINAL = {"completed", "succeeded", "failed", "deleted", "error"}
+# canfar.Session.timeout is capped at 300 by the library.
+_CANFAR_MAX_TIMEOUT = 300
+_DEFAULT_HTTP_TIMEOUT = 120
+
+_T = TypeVar("_T")
 
 
 class SessionClient(Protocol):
@@ -48,6 +54,49 @@ def cpu_utilization(info: dict[str, Any]) -> float | None:
         default=0.0,
     )
     return in_use / requested
+
+
+def clamp_http_timeout(timeout: int) -> int:
+    """Clamp to canfar.Session allowed range (1..300)."""
+    return max(1, min(int(timeout), _CANFAR_MAX_TIMEOUT))
+
+
+def _is_transient_skaha_error(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    markers = ("timeout", "timed out", "temporarily", "connection", "reset", "unavailable")
+    return any(m in name for m in markers) or any(m in text for m in markers)
+
+
+def call_with_retries(
+    operation: str,
+    func: Callable[[], _T],
+    *,
+    retries: int,
+    base_delay: float = 2.0,
+) -> _T:
+    """Run ``func``, retrying transient Skaha/HTTP failures with exponential backoff."""
+    attempts = max(1, int(retries))
+    last: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return func()
+        except Exception as exc:
+            last = exc
+            if attempt >= attempts or not _is_transient_skaha_error(exc):
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            _LOG.warning(
+                "%s failed (attempt %s/%s): %s; retrying in %.1fs",
+                operation,
+                attempt,
+                attempts,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+    assert last is not None
+    raise last
 
 
 @dataclass
@@ -104,7 +153,11 @@ class WorkerPool:
             if self.site.gpu is not None:
                 kwargs["gpu"] = self.site.gpu
             _LOG.info("creating worker %s", name)
-            ids = self.session.create(**kwargs)
+            ids = call_with_retries(
+                f"create worker {name}",
+                lambda kw=dict(kwargs): self.session.create(**kw),
+                retries=self.site.http_retries,
+            )
             created.extend(ids)
             for sid in ids:
                 self.session_ids.append(sid)
@@ -219,7 +272,11 @@ class WorkerPool:
                 self.site.stall_cpu_fraction,
             )
             try:
-                self.session.destroy([sid])
+                call_with_retries(
+                    f"destroy stalled session {sid}",
+                    lambda s=sid: self.session.destroy([s]),
+                    retries=self.site.http_retries,
+                )
             except Exception as exc:
                 _LOG.warning("destroy failed for stalled session %s: %s", sid, exc)
             if sid in self.session_ids:
@@ -250,7 +307,11 @@ class WorkerPool:
         ids = list(self.session_ids)
         _LOG.info("destroying %d workers", len(ids))
         try:
-            self.session.destroy(ids)
+            call_with_retries(
+                "destroy workers",
+                lambda: self.session.destroy(ids),
+                retries=self.site.http_retries,
+            )
         finally:
             self.session_ids = []
             self.worker_name_by_session.clear()
@@ -258,10 +319,14 @@ class WorkerPool:
             self.seen_claim_poll.clear()
 
 
-def default_session() -> Any:
+def default_session(*, timeout: int | None = None) -> Any:
+    """Build a ``canfar.sessions.Session`` with a Skaha-friendly HTTP timeout.
+
+    The canfar client default is 30s, which is often too short for ``create``.
+    """
     from canfar.sessions import Session
 
-    return Session()
+    return Session(timeout=clamp_http_timeout(timeout if timeout is not None else _DEFAULT_HTTP_TIMEOUT))
 
 
 def default_worker_script() -> Path:

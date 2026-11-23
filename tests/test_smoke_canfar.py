@@ -48,6 +48,8 @@ def test_live_one_worker_tiny_graph():
         poll_interval=10,
         replace_workers=False,
         worker_name_prefix="bps-smoke",
+        http_timeout=int(os.environ.get("BPS_CANFAR_HTTP_TIMEOUT", "180")),
+        http_retries=int(os.environ.get("BPS_CANFAR_HTTP_RETRIES", "4")),
     )
     CanfarWorkflow.from_payloads(
         "smoke",
@@ -55,7 +57,7 @@ def test_live_one_worker_tiny_graph():
         [JobPayload(name="hello", label="smoke", command="echo smoke-ok && hostname")],
         site=site,
     )
-    session = default_session()
+    session = default_session(timeout=site.http_timeout)
     layout = QueueLayout(submit_path)
     orch = Orchestrator(
         layout,

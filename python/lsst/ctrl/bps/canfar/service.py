@@ -62,7 +62,11 @@ class CanfarService(BaseWmsService):
         if getattr(workflow, "site", None) is not None:
             site = workflow.site
         layout = QueueLayout(submit_path)
-        orch = Orchestrator(layout, site, session=kwargs.get("session") or default_session())
+        orch = Orchestrator(
+            layout,
+            site,
+            session=kwargs.get("session") or default_session(timeout=site.http_timeout),
+        )
         # Blocking orchestrator (foreground MVP). For smoke tests pass once=True.
         once = bool(kwargs.get("once", False))
         state = orch.run(launch_workers=True, once=once)
@@ -197,9 +201,8 @@ class CanfarService(BaseWmsService):
 
     def run_submission_checks(self):
         site = load_site_config(self.config)
-        session = default_session()
-        # Ping by listing info on an empty set should not fail auth hard;
-        # create --dry-run is not always available on Session, so try images via CLI-equivalent.
+        # Constructing Session validates auth material; Images ping is best-effort.
+        session = default_session(timeout=site.http_timeout)
         try:
             from canfar.images import Images
 
@@ -217,7 +220,6 @@ class CanfarService(BaseWmsService):
                 )
         except Exception as exc:
             _LOG.warning("could not verify headless image listing: %s", exc)
-        # Ensure credentials resolve.
         _ = session
         return True
 

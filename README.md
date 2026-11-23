@@ -60,10 +60,16 @@ site:
     reclaimGraceSeconds: 120
     stallCpuFraction: 0.01
     stallPolls: 5
+    httpTimeout: 120
+    httpRetries: 3
 ```
 
 `submitPath` must be on storage visible to both the submit host and the
 workers (typically under `/arc/...`).
+
+`httpTimeout` is passed to `canfar.sessions.Session` (library max 300s; their
+default is 30s). Session create on a busy Skaha often needs more; create and
+destroy also retry transient timeouts up to `httpRetries` times.
 
 ## Usage
 

@@ -30,6 +30,10 @@ class CanfarSiteConfig:
     # Stall detection: cpuCoresInUse / requestedCPUCores below this for stall_polls.
     stall_cpu_fraction: float = 0.01
     stall_polls: int = 5
+    # canfar.Session HTTP inactivity timeout (seconds). Library max is 300.
+    http_timeout: int = 120
+    # Retries for transient Skaha create/destroy failures (timeouts, etc.).
+    http_retries: int = 3
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> CanfarSiteConfig:
@@ -72,6 +76,12 @@ class CanfarSiteConfig:
             ),
             stall_polls=int(
                 data.get("stallPolls", data.get("stall_polls", cls.stall_polls))
+            ),
+            http_timeout=int(
+                data.get("httpTimeout", data.get("http_timeout", cls.http_timeout))
+            ),
+            http_retries=int(
+                data.get("httpRetries", data.get("http_retries", cls.http_retries))
             ),
         )
 
@@ -125,6 +135,8 @@ def load_site_config(config: Any = None, compute_site: str | None = None) -> Can
             "reclaimGraceSeconds",
             "stallCpuFraction",
             "stallPolls",
+            "httpTimeout",
+            "httpRetries",
         ):
             value = _get(config, key)
             if value is not None and key not in site_overrides:

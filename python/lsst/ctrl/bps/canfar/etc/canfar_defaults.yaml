@@ -27,3 +27,8 @@ site:
     # First poll after claim is skipped; then stallPolls low samples trigger reclaim+destroy.
     stallCpuFraction: 0.01
     stallPolls: 5
+    # canfar.Session HTTP inactivity timeout (seconds; library max 300).
+    # Session create often needs more than the client default of 30.
+    httpTimeout: 120
+    # Retries for transient Skaha create/destroy failures (timeouts, etc.).
+    httpRetries: 3

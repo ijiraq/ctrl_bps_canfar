@@ -9,12 +9,19 @@ POLL_INTERVAL=${3:-${BPS_CANFAR_POLL_INTERVAL:-30}}
 WORKER_ID=${4:-${BPS_CANFAR_WORKER_ID:-${REPLICA_ID:-$$}}}
 
 export SHELL=${SHELL:-/bin/bash}
-if [[ -f /opt/lsst/software/stack/loadLSST.bash ]]; then
-  # shellcheck disable=SC1091
+# Project env (LSST/EUPS/conda). Sourced with nounset off — setup scripts
+# touch unset vars (e.g. EUPS_PATH). Prefer BPS_CANFAR_ENV_SH when set.
+ENV_SH=${BPS_CANFAR_ENV_SH:-/arc/projects/NewHorizons/env.sh}
+if [[ -f "${ENV_SH}" ]]; then
   set +u
-  . /arc/projects/NewHorizons/env.sh
-  # . /opt/lsst/software/stack/loadLSST.bash
-  # setup lsst_distrib >/dev/null 2>&1 || true
+  # shellcheck disable=SC1090
+  . "${ENV_SH}"
+  set -u
+elif [[ -f /opt/lsst/software/stack/loadLSST.bash ]]; then
+  set +u
+  # shellcheck disable=SC1091
+  . /opt/lsst/software/stack/loadLSST.bash
+  setup lsst_distrib >/dev/null 2>&1 || true
   set -u
 fi
 

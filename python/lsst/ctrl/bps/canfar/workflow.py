@@ -115,6 +115,8 @@ class CanfarWorkflow(BaseWmsWorkflow):
                 "reclaimGraceSeconds": site.reclaim_grace_seconds,
                 "stallCpuFraction": site.stall_cpu_fraction,
                 "stallPolls": site.stall_polls,
+                "httpTimeout": site.http_timeout,
+                "httpRetries": site.http_retries,
             },
         }
         # Preserve useful BPS labels when present.
@@ -173,6 +175,8 @@ class CanfarWorkflow(BaseWmsWorkflow):
                         "reclaimGraceSeconds": site.reclaim_grace_seconds,
                         "stallCpuFraction": site.stall_cpu_fraction,
                         "stallPolls": site.stall_polls,
+                        "httpTimeout": site.http_timeout,
+                        "httpRetries": site.http_retries,
                     },
                 },
                 sort_keys=False,

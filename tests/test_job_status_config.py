@@ -18,6 +18,20 @@ def test_load_site_config_overrides():
     assert cfg.image == "x:y"
 
 
+def test_load_site_config_http_timeout():
+    cfg = load_site_config(
+        {
+            "computeSite": "canfar",
+            "site": {"canfar": {"httpTimeout": 180, "httpRetries": 5}},
+        }
+    )
+    assert cfg.http_timeout == 180
+    assert cfg.http_retries == 5
+    defaults = load_site_config({"computeSite": "canfar"})
+    assert defaults.http_timeout == 120
+    assert defaults.http_retries == 3
+
+
 def test_command_expansion():
     job = SimpleNamespace(
         name="j",

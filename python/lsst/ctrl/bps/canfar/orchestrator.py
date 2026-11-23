@@ -40,7 +40,7 @@ class Orchestrator:
         self.pool = pool or WorkerPool(
             submit_path=layout.root,
             site=site,
-            session=session or default_session(),
+            session=session or default_session(timeout=site.http_timeout),
             worker_script=worker_script,
         )
 

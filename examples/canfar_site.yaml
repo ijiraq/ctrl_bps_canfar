@@ -16,3 +16,5 @@ site:
     reclaimGraceSeconds: 120
     stallCpuFraction: 0.01
     stallPolls: 5
+    httpTimeout: 120
+    httpRetries: 3

@@ -82,8 +82,10 @@ def run_worker(
             with log_path.open("w", encoding="utf-8") as log_fh:
                 log_fh.write(f"# worker={worker_id}\n# job={job.name}\n# command={job.command}\n")
                 log_fh.flush()
+                # Non-login, no rc: worker already sourced env.sh / loadLSST.
+                # A login shell re-runs ~/.bashrc and can emit "ERROR: .bashrc failed".
                 completed = subprocess.run(
-                    ["bash", "-lc", job.command],
+                    ["bash", "--noprofile", "--norc", "-c", job.command],
                     stdout=log_fh,
                     stderr=subprocess.STDOUT,
                     env=env,
