@@ -207,11 +207,8 @@ class CanfarService(BaseWmsService):
             from canfar.images import Images
 
             images = Images()
-            listing = images.fetch(kind="headless")
-            names = {
-                str(item.get("id") or item.get("image") or item.get("name") or "")
-                for item in listing or []
-            }
+            # canfar.Images.fetch returns list[str] image ids.
+            names = {str(item) for item in (images.fetch(kind="headless") or [])}
             if names and site.image not in names and not any(site.image in n for n in names):
                 _LOG.warning(
                     "image %s not obviously present in headless listing (%d images)",
