@@ -1,0 +1,5 @@
+# EUPS table for lsst_deep_mop (NH deep MOP + SSO injection)
+setupRequired(ctrl_bps)
+
+envPrepend(PYTHONPATH, ${PRODUCT_DIR}/python)
+envPrepend(PATH, ${PRODUCT_DIR}/bin)
