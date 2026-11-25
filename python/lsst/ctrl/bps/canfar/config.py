@@ -34,6 +34,9 @@ class CanfarSiteConfig:
     http_timeout: int = 120
     # Retries for transient Skaha create/destroy failures (timeouts, etc.).
     http_retries: int = 3
+    # Script each worker sources before taking jobs (project env); when
+    # unset the worker loads the image's stack with loadLSST.bash.
+    env_script: str | None = None
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> CanfarSiteConfig:
@@ -83,7 +86,36 @@ class CanfarSiteConfig:
             http_retries=int(
                 data.get("httpRetries", data.get("http_retries", cls.http_retries))
             ),
+            env_script=_optional_str(data.get("envScript", data.get("env_script"))),
         )
+
+    def to_mapping(self) -> dict[str, Any]:
+        """Inverse of `from_mapping`, using the BPS (camelCase) key names."""
+        return {
+            "image": self.image,
+            "nWorkers": self.n_workers,
+            "cores": self.cores,
+            "ram": self.ram,
+            "gpu": self.gpu,
+            "idleTimeout": self.idle_timeout,
+            "pollInterval": self.poll_interval,
+            "workerNamePrefix": self.worker_name_prefix,
+            "replaceWorkers": self.replace_workers,
+            "reclaimGraceSeconds": self.reclaim_grace_seconds,
+            "stallCpuFraction": self.stall_cpu_fraction,
+            "stallPolls": self.stall_polls,
+            "httpTimeout": self.http_timeout,
+            "httpRetries": self.http_retries,
+            "envScript": self.env_script,
+        }
+
+
+def _optional_str(value: Any) -> str | None:
+    # Same convention as _optional_int: BPS reports unset keys as "".
+    if value is None or value == "null":
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _optional_int(value: Any) -> int | None:
@@ -140,6 +172,7 @@ def load_site_config(config: Any = None, compute_site: str | None = None) -> Can
             "stallPolls",
             "httpTimeout",
             "httpRetries",
+            "envScript",
         ):
             value = _get(config, key)
             if value is not None and key not in site_overrides:

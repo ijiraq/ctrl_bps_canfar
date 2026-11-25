@@ -20,8 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # lsst-ctrl-bps is provided by the Science Pipelines stack in practice.
-bps = ["lsst-ctrl-bps"]
-test = ["pytest>=7"]
+bps = ["lsst-ctrl-bps", "lsst-resources"]
+# lsst-resources moves job files when workers cannot read them in place.
+test = ["pytest>=7", "lsst-resources"]
 
 [project.urls]
 Homepage = "https://github.com/ijiraq/ctrl_bps_canfar"

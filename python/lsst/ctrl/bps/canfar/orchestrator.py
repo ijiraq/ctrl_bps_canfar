@@ -8,8 +8,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from .config import CanfarSiteConfig, load_site_config
 from .pool import WorkerPool, default_session, default_worker_script
 from .queue import QueueLayout
@@ -144,9 +142,7 @@ class Orchestrator:
 
 def run_from_submit_path(submit_path: str | Path, *, once: bool = False) -> dict[str, Any]:
     layout = QueueLayout(submit_path)
-    run_cfg: dict[str, Any] = {}
-    if layout.run_path.is_file():
-        run_cfg = yaml.safe_load(layout.run_path.read_text(encoding="utf-8")) or {}
+    run_cfg = layout.read_run()
     site = load_site_config(run_cfg.get("siteConfig") or run_cfg)
     orch = Orchestrator(layout, site)
     # Restore known worker ids if restarting.

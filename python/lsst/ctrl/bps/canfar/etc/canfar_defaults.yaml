@@ -32,3 +32,8 @@ site:
     httpTimeout: 120
     # Retries for transient Skaha create/destroy failures (timeouts, etc.).
     httpRetries: 3
+    # Script each worker sources before taking jobs (project environment:
+    # butler location, extra EUPS products, this plugin). Path as seen by
+    # the worker. Unset: workers load the image's stack with loadLSST.bash
+    # and `setup lsst_distrib`.
+    # envScript: /arc/projects/MyProject/env.sh

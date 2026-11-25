@@ -9,10 +9,15 @@ POLL_INTERVAL=${3:-${BPS_CANFAR_POLL_INTERVAL:-30}}
 WORKER_ID=${4:-${BPS_CANFAR_WORKER_ID:-${REPLICA_ID:-$$}}}
 
 export SHELL=${SHELL:-/bin/bash}
-# Project env (LSST/EUPS/conda). Sourced with nounset off — setup scripts
-# touch unset vars (e.g. EUPS_PATH). Prefer BPS_CANFAR_ENV_SH when set.
-ENV_SH=${BPS_CANFAR_ENV_SH:-/arc/projects/NewHorizons/env.sh}
-if [[ -f "${ENV_SH}" ]]; then
+# Project env (LSST/EUPS/conda) comes from BPS_CANFAR_ENV_SH, which the
+# plugin sets from site.<computeSite>.envScript. Without it the worker loads
+# the image's stack. Sourced with nounset off — setup scripts touch unset
+# vars (e.g. EUPS_PATH).
+ENV_SH=${BPS_CANFAR_ENV_SH:-}
+if [[ -n "${ENV_SH}" && ! -f "${ENV_SH}" ]]; then
+  echo "run_worker.sh: BPS_CANFAR_ENV_SH=${ENV_SH} not found; loading the image stack instead" >&2
+fi
+if [[ -n "${ENV_SH}" && -f "${ENV_SH}" ]]; then
   set +u
   # shellcheck disable=SC1090
   . "${ENV_SH}"

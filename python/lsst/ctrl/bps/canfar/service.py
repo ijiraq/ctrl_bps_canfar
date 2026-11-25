@@ -10,6 +10,7 @@ from .config import defaults_path, load_site_config
 from .orchestrator import Orchestrator, run_from_submit_path
 from .pool import default_session
 from .queue import QueueLayout
+from .staging import distribute
 from .status import WmsStates, overall_run_state, state_for_location, summarize_job_states
 from .workflow import CanfarWorkflow
 
@@ -26,7 +27,7 @@ except Exception:  # pragma: no cover
 
 
 class CanfarService(BaseWmsService):
-    """Submit BPS workflows to CANFAR using warm headless workers + an /arc queue."""
+    """Submit BPS workflows to CANFAR using warm headless workers + a filesystem queue."""
 
     @property
     def defaults(self):
@@ -62,6 +63,14 @@ class CanfarService(BaseWmsService):
         if getattr(workflow, "site", None) is not None:
             site = workflow.site
         layout = QueueLayout(submit_path)
+        # Publish files the workers cannot read in place.  Done here rather
+        # than in prepare because BPS writes per-job QuantumGraph files after
+        # the plugin's prepare when whenSaveJobQgraph is PREPARE.
+        run_doc = layout.read_run()
+        to_distribute = list(run_doc.get("filesToDistribute") or [])
+        if to_distribute:
+            published = distribute(to_distribute, str(run_doc.get("fileDistributionEndPoint") or ""))
+            _LOG.info("published %d file(s) for workers", len(published))
         orch = Orchestrator(
             layout,
             site,
@@ -80,15 +89,7 @@ class CanfarService(BaseWmsService):
         if not layout.dag_path.is_file():
             return None, None, f"no dag.json under {submit_path}"
         # Move failed jobs back to payloads for retry; leave processed alone.
-        for path in layout.list_json(layout.failed):
-            dest = layout.payloads / path.name
-            path.rename(dest)
-        for path in layout.list_json(layout.queue):
-            dest = layout.payloads / path.name
-            path.rename(dest)
-        for path in layout.list_json(layout.processing):
-            dest = layout.payloads / path.name
-            path.rename(dest)
+        layout.requeue_for_restart()
         layout.clear_cancel()
         try:
             state = run_from_submit_path(submit_path, once=False)
@@ -139,11 +140,7 @@ class CanfarService(BaseWmsService):
             per_label = job_summary.setdefault(label, {})
             per_label[state] = per_label.get(state, 0) + 1
 
-        run_doc = {}
-        if layout.run_path.is_file():
-            import yaml
-
-            run_doc = yaml.safe_load(layout.run_path.read_text(encoding="utf-8")) or {}
+        run_doc = layout.read_run()
 
         if WmsRunReport is None:
             return [
@@ -195,8 +192,7 @@ class CanfarService(BaseWmsService):
             except Exception as exc:
                 return False, f"cancel flag written but destroy failed: {exc}"
         # Park queued work so workers that have not exited yet do not claim more.
-        for path in layout.list_json(layout.queue):
-            path.rename(layout.payloads / path.name)
+        layout.park_queued()
         return True, f"Cancelled CANFAR BPS run {wms_id}"
 
     def run_submission_checks(self):

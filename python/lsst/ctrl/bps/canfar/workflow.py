@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from .config import CanfarSiteConfig, load_site_config
-from .job import payload_from_generic_job
-from .queue import JobPayload, QueueLayout
+from .job import job_files, payload_from_generic_job
+from .queue import ACCESS_REMOTE, ACCESS_SHARED, JobPayload, QueueLayout
+from .staging import validate_endpoint
 
 _LOG = logging.getLogger(__name__)
 
@@ -21,6 +21,35 @@ except Exception:  # pragma: no cover
     BaseWmsWorkflow = object  # type: ignore[misc, assignment]
     BpsConfig = Any  # type: ignore[misc, assignment]
     GenericWorkflow = Any  # type: ignore[misc, assignment]
+
+
+def _config_value(config: Any, key: str, default: Any) -> Any:
+    """Look up a BPS setting, honouring site-level overrides when possible."""
+    value: Any = None
+    search = getattr(config, "search", None)
+    if callable(search):
+        opt: dict[str, Any] = {}
+        get_search_opts = getattr(config, "get_search_opts", None)
+        if callable(get_search_opts):
+            # Fills in curr_site so site.<computeSite>.<key> is searched.
+            opt = dict(get_search_opts())
+        opt["default"] = default
+        _, value = search(key, opt=opt)
+    elif config is not None:
+        try:
+            value = config[key]
+        except (KeyError, TypeError):
+            value = None
+    # BPS reports unset keys as "".
+    if value is None or value == "":
+        return default
+    return value
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _worker_script_source() -> Path:
@@ -50,7 +79,7 @@ def write_worker_script(dest: Path) -> Path:
 
 
 class CanfarWorkflow(BaseWmsWorkflow):
-    """WMS workflow that materializes an ARC job queue under ``submitPath``."""
+    """WMS workflow that materializes a job queue under ``submitPath``."""
 
     def __init__(self, name: str, config: Any, *, site: CanfarSiteConfig | None = None):
         if BaseWmsWorkflow is not object:
@@ -63,6 +92,9 @@ class CanfarWorkflow(BaseWmsWorkflow):
         self.payloads: list[JobPayload] = []
         self.run_id: str | None = None
         self.submit_path: str | None = None
+        self.access_mode: str = ACCESS_SHARED
+        # Submit-side files CanfarService.submit publishes for the workers.
+        self.files_to_distribute: list[str] = []
 
     @classmethod
     def from_generic_workflow(
@@ -79,6 +111,13 @@ class CanfarWorkflow(BaseWmsWorkflow):
         layout.ensure()
         write_worker_script(layout.root / "run_worker.sh")
 
+        use_shared = _as_bool(_config_value(config, "bpsUseShared", True))
+        endpoint = ""
+        if not use_shared:
+            endpoint = validate_endpoint(str(_config_value(config, "fileDistributionEndPoint", "")))
+        # basename at the endpoint -> submit-side file published under it.
+        to_distribute: dict[str, str] = {}
+
         payloads: list[JobPayload] = []
         for job_name in generic_workflow:
             job = generic_workflow.get_job(job_name)
@@ -93,7 +132,16 @@ class CanfarWorkflow(BaseWmsWorkflow):
                     parent.executable, "src_uri", None
                 ):
                     parents.append(parent_name)
-            payload = payload_from_generic_job(job, parents=parents)
+            files = job_files(generic_workflow, job_name, use_shared=use_shared, endpoint=endpoint)
+            for src in files.distribute:
+                published_as = os.path.basename(src.rstrip("/"))
+                other = to_distribute.setdefault(published_as, src)
+                if other != src:
+                    raise ValueError(
+                        f"job {job_name}: {src} and {other} would both be published as "
+                        f"{endpoint}{published_as}"
+                    )
+            payload = payload_from_generic_job(job, parents=parents, files=files)
             layout.write_payload(payload)
             payloads.append(payload)
 
@@ -102,22 +150,10 @@ class CanfarWorkflow(BaseWmsWorkflow):
             "name": generic_workflow.name,
             "serviceClass": service_class,
             "submitPath": out_prefix,
-            "siteConfig": {
-                "image": site.image,
-                "nWorkers": site.n_workers,
-                "cores": site.cores,
-                "ram": site.ram,
-                "gpu": site.gpu,
-                "idleTimeout": site.idle_timeout,
-                "pollInterval": site.poll_interval,
-                "workerNamePrefix": site.worker_name_prefix,
-                "replaceWorkers": site.replace_workers,
-                "reclaimGraceSeconds": site.reclaim_grace_seconds,
-                "stallCpuFraction": site.stall_cpu_fraction,
-                "stallPolls": site.stall_polls,
-                "httpTimeout": site.http_timeout,
-                "httpRetries": site.http_retries,
-            },
+            "accessMode": ACCESS_SHARED if use_shared else ACCESS_REMOTE,
+            "fileDistributionEndPoint": endpoint,
+            "filesToDistribute": list(to_distribute.values()),
+            "siteConfig": site.to_mapping(),
         }
         # Preserve useful BPS labels when present.
         for key in ("project", "campaign", "payloadName", "operator", "computeSite"):
@@ -127,10 +163,12 @@ class CanfarWorkflow(BaseWmsWorkflow):
                 value = None
             if value is not None:
                 run_doc[key] = value
-        layout.run_path.write_text(yaml.safe_dump(run_doc, sort_keys=False), encoding="utf-8")
+        layout.write_run(run_doc)
         workflow.layout = layout
         workflow.payloads = payloads
         workflow.run_id = out_prefix
+        workflow.access_mode = run_doc["accessMode"]
+        workflow.files_to_distribute = list(to_distribute.values())
         return workflow
 
     def write(self, out_prefix: str) -> None:
@@ -158,30 +196,13 @@ class CanfarWorkflow(BaseWmsWorkflow):
         for payload in payloads:
             layout.write_payload(payload)
         layout.write_dag(payloads)
-        layout.run_path.write_text(
-            yaml.safe_dump(
-                {
-                    "name": name,
-                    "submitPath": str(submit_path),
-                    "siteConfig": {
-                        "image": site.image,
-                        "nWorkers": site.n_workers,
-                        "cores": site.cores,
-                        "ram": site.ram,
-                        "idleTimeout": site.idle_timeout,
-                        "pollInterval": site.poll_interval,
-                        "workerNamePrefix": site.worker_name_prefix,
-                        "replaceWorkers": site.replace_workers,
-                        "reclaimGraceSeconds": site.reclaim_grace_seconds,
-                        "stallCpuFraction": site.stall_cpu_fraction,
-                        "stallPolls": site.stall_polls,
-                        "httpTimeout": site.http_timeout,
-                        "httpRetries": site.http_retries,
-                    },
-                },
-                sort_keys=False,
-            ),
-            encoding="utf-8",
+        layout.write_run(
+            {
+                "name": name,
+                "submitPath": str(submit_path),
+                "accessMode": ACCESS_SHARED,
+                "siteConfig": site.to_mapping(),
+            }
         )
         workflow.layout = layout
         workflow.payloads = payloads
