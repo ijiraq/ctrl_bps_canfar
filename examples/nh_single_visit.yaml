@@ -64,3 +64,5 @@ site:
     ram: 4
     httpTimeout: 180
     httpRetries: 4
+    # Project environment the workers source (BUTLER_DIR, PIPE_DIR, EUPS setups).
+    envScript: /arc/projects/NewHorizons/env.sh

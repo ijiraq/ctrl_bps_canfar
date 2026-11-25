@@ -5,6 +5,8 @@ Skipped unless ``BPS_CANFAR_SMOKE=1``. Requires:
 - ``canfar login cadc`` already done
 - ``BPS_CANFAR_SUBMIT_PATH`` under ``/arc`` (shared with headless workers)
 - a headless image (default: lsst/sciplat-lab:latest)
+- ``BPS_CANFAR_ENV_SH`` pointing at an environment script that sets up this
+  plugin, unless the plugin is installed in the image
 
 Runs a one-job DAG with a single worker, then tears the session down.
 """
@@ -50,6 +52,8 @@ def test_live_one_worker_tiny_graph():
         worker_name_prefix="bps-smoke",
         http_timeout=int(os.environ.get("BPS_CANFAR_HTTP_TIMEOUT", "180")),
         http_retries=int(os.environ.get("BPS_CANFAR_HTTP_RETRIES", "4")),
+        # Needed when the plugin is not installed in the worker image.
+        env_script=os.environ.get("BPS_CANFAR_ENV_SH") or None,
     )
     CanfarWorkflow.from_payloads(
         "smoke",

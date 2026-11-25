@@ -18,3 +18,6 @@ site:
     stallPolls: 5
     httpTimeout: 120
     httpRetries: 3
+    # Script the workers source for the project environment (path as seen by
+    # the worker). Without it they load the image's stack only.
+    # envScript: /arc/projects/MyProject/env.sh

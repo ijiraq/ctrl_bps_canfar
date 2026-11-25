@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+import yaml
+
 from .config import QUEUE_SUBDIRS, sanitize_name
 
 _LOG = logging.getLogger(__name__)
@@ -18,6 +20,11 @@ DAG_NAME = "dag.json"
 RUN_NAME = "run.yaml"
 STATE_NAME = "state.json"
 CANCEL_FLAG = "CANCEL"
+
+#: Workers see the submit-side filesystem (``bpsUseShared: true``).
+ACCESS_SHARED = "shared"
+#: Workers reach submit-side files only through ``fileDistributionEndPoint``.
+ACCESS_REMOTE = "remote"
 
 
 @dataclass
@@ -31,6 +38,12 @@ class JobPayload:
     environment: dict[str, str] = field(default_factory=dict)
     request_cpus: int | None = None
     request_memory_mb: int | None = None
+    # Files the worker copies into the job's working directory before the
+    # command runs: {"source": uri, "dest": name, "executable": bool}.
+    fetch: list[dict[str, Any]] = field(default_factory=list)
+    access_mode: str = ACCESS_SHARED
+    # Number of times a worker has started this job.
+    attempt: int = 0
 
     @property
     def filename(self) -> str:
@@ -49,6 +62,17 @@ class JobPayload:
             environment={str(k): str(v) for k, v in (data.get("environment") or {}).items()},
             request_cpus=_as_optional_int(data.get("request_cpus")),
             request_memory_mb=_as_optional_int(data.get("request_memory_mb")),
+            # Absent in payloads written before these fields existed.
+            fetch=[
+                {
+                    "source": str(entry["source"]),
+                    "dest": str(entry["dest"]),
+                    "executable": bool(entry.get("executable", False)),
+                }
+                for entry in data.get("fetch") or []
+            ],
+            access_mode=str(data.get("access_mode") or ACCESS_SHARED),
+            attempt=int(data.get("attempt") or 0),
         )
 
 
@@ -130,6 +154,29 @@ class QueueLayout:
 
     def read_payload(self, path: Path) -> JobPayload:
         return JobPayload.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def record_attempt(self, path: Path) -> JobPayload:
+        """Count one more start of the claimed job at ``path``.
+
+        The payload is rewritten through a rename so the orchestrator never
+        reads a half-written file.
+        """
+        job = self.read_payload(path)
+        job.attempt += 1
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(job.to_dict(), indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return job
+
+    def write_run(self, run_doc: MappingLike) -> Path:
+        self.run_path.write_text(yaml.safe_dump(dict(run_doc), sort_keys=False), encoding="utf-8")
+        return self.run_path
+
+    def read_run(self) -> dict[str, Any]:
+        if not self.run_path.is_file():
+            return {}
+        data = yaml.safe_load(self.run_path.read_text(encoding="utf-8")) or {}
+        return data if isinstance(data, dict) else {}
 
     def write_dag(self, jobs: Iterable[JobPayload]) -> Path:
         payload = {
@@ -224,11 +271,43 @@ class QueueLayout:
         os.rename(processing_path, dest)
         return dest
 
+    def requeue_for_restart(self) -> list[str]:
+        """Move failed, queued and claimed jobs back to ``payloads/``.
+
+        Succeeded jobs stay in ``processed/``.
+        """
+        moved: list[str] = []
+        for directory in (self.failed, self.queue, self.processing):
+            for path in self.list_json(directory):
+                path.rename(self.payloads / path.name)
+                moved.append(path.stem)
+        return moved
+
+    def park_queued(self) -> list[str]:
+        """Move ready-but-unclaimed jobs back to ``payloads/``."""
+        parked: list[str] = []
+        for path in self.list_json(self.queue):
+            path.rename(self.payloads / path.name)
+            parked.append(path.stem)
+        return parked
+
     def worker_alive_path(self, worker_id: str) -> Path:
         return self.workers / f"{sanitize_name(worker_id)}.alive"
 
     def worker_session_path(self, worker_id: str) -> Path:
         return self.workers / f"{sanitize_name(worker_id)}.session"
+
+    def write_worker_session(self, worker_id: str, session_id: str) -> Path:
+        self.workers.mkdir(parents=True, exist_ok=True)
+        path = self.worker_session_path(worker_id)
+        path.write_text(f"{session_id}\n", encoding="utf-8")
+        return path
+
+    def read_worker_session(self, worker_id: str) -> str | None:
+        path = self.worker_session_path(worker_id)
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8").strip() or None
 
     def claim_owner_path(self, job_name: str) -> Path:
         return self.processing / f"{sanitize_name(job_name)}.owner"

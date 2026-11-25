@@ -131,18 +131,21 @@ class WorkerPool:
             ordinal = len(self.session_ids) + index + 1
             name = sanitize_name(f"{self.site.worker_name_prefix}-{self.submit_path.name}-{ordinal}")
             args = f"{script} {submit} {self.site.idle_timeout} {self.site.poll_interval} {name}"
+            env = {
+                "BPS_CANFAR_SUBMIT_PATH": str(self.submit_path),
+                "BPS_CANFAR_IDLE_TIMEOUT": str(self.site.idle_timeout),
+                "BPS_CANFAR_POLL_INTERVAL": str(self.site.poll_interval),
+                "BPS_CANFAR_WORKER_ID": name,
+            }
+            if self.site.env_script:
+                env["BPS_CANFAR_ENV_SH"] = self.site.env_script
             kwargs: dict[str, Any] = {
                 "name": name,
                 "image": self.site.image,
                 "kind": "headless",
                 "cmd": "bash",
                 "args": args,
-                "env": {
-                    "BPS_CANFAR_SUBMIT_PATH": str(self.submit_path),
-                    "BPS_CANFAR_IDLE_TIMEOUT": str(self.site.idle_timeout),
-                    "BPS_CANFAR_POLL_INTERVAL": str(self.site.poll_interval),
-                    "BPS_CANFAR_WORKER_ID": name,
-                },
+                "env": env,
                 "replicas": 1,
                 "errors": "raise",
             }
@@ -162,7 +165,7 @@ class WorkerPool:
             for sid in ids:
                 self.session_ids.append(sid)
                 self.worker_name_by_session[sid] = name
-                layout.worker_session_path(name).write_text(f"{sid}\n", encoding="utf-8")
+                layout.write_worker_session(name, sid)
         return created
 
     def _session_infos(self) -> dict[str, dict[str, Any]]:

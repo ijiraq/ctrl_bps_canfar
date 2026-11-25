@@ -73,10 +73,18 @@ site:
     stallPolls: 5
     httpTimeout: 120
     httpRetries: 3
+    envScript: /arc/projects/MyProject/env.sh
 ```
 
 `submitPath` must be on storage visible to both the submit host and the
 workers (typically under `/arc/...`).
+
+`envScript` is the script each worker sources before it takes jobs: the
+project environment (butler location, extra EUPS products, this plugin if it
+is not installed in the image). The path is the one the worker sees. When it
+is unset, workers load the image's stack (`loadLSST.bash`, `setup
+lsst_distrib`) and nothing else, so a run whose commands use variables such as
+`${BUTLER_DIR}` needs it.
 
 `httpTimeout` is passed to `canfar.sessions.Session` (library max 300s; their
 default is 30s). Session create on a busy Skaha often needs more; create and
@@ -104,6 +112,93 @@ active job name in `workers/<id>.alive` (and a `processing/<job>.owner`
 sidecar) so claims can be mapped to sessions. Jobs left in `processing/` with
 no owning heartbeat are reclaimed after `reclaimGraceSeconds`.
 
+## Command lines and job files
+
+BPS hands the plugin command lines that still contain placeholders
+(`useLazyCommands: true` is the BPS default). They are resolved at
+`bps prepare`, so every payload under `payloads/` holds a command that can be
+passed to `bash` as it is:
+
+| Placeholder | Becomes |
+| --- | --- |
+| `{key}` | the value BPS stored for the job |
+| `<FILE:name>` | a path, chosen by the access mode below |
+| `<ENV:VAR>` | `${VAR}`, evaluated on the worker (also in the job's `environment`) |
+| `<WMS:attemptNum>` | `${BPS_CANFAR_ATTEMPT}`: earlier starts of the job, 0 on the first run |
+
+A placeholder that cannot be resolved fails `bps prepare` with the job and
+placeholder named.
+
+Each job runs in its own scratch directory, removed when the job ends. It is
+created under `$BPS_CANFAR_SCRATCH` if the worker's environment sets that
+(for example in `envScript`), otherwise under the system temporary directory.
+
+### Access modes
+
+`bpsUseShared` (a standard BPS key, default `true`) says whether workers see
+the submit host's filesystem.
+
+**Shared** (`bpsUseShared: true`). `<FILE:runQgraphFile>` becomes the
+absolute path BPS wrote, for example
+`/arc/projects/MyProject/bps/.../run.qg`. Nothing is copied.
+
+**Non-shared** (`bpsUseShared: false`). Workers reach submit-side files only
+through `fileDistributionEndPoint`, a URI that must end in `/`:
+
+```yaml
+bpsUseShared: false
+fileDistributionEndPoint: "https://example.org/files/bps/{uniqProcName}/"
+```
+
+- `bps submit` copies the files the jobs need (the QuantumGraph, and the
+  final-job script when the final job is part of the run, see below) to the
+  endpoint before any worker starts.
+- `<FILE:runQgraphFile>` becomes the bare file name. The BPS command templates
+  already write `{fileDistributionEndPoint}{qgraphFile}`, so `pipetask` opens
+  `<endpoint>run.qg` itself. A custom `runQuantumCommand` has to keep that
+  prefix.
+- Files a job cannot open remotely, and executables BPS asks to have
+  transferred (the final-job script), are copied into the job's scratch
+  directory first.
+- `butlerConfig` is passed through untouched, so it can be a remote butler
+  URL or label.
+
+Give each run its own endpoint directory (`{uniqProcName}` above): files are
+published under their base names and an existing file is overwritten.
+
+Copies use `lsst.resources.ResourcePath`, so any scheme it supports for both
+the submit host and the workers will do. Only `file://` is covered by the
+tests in this package.
+
+### The final job
+
+BPS adds a final job (`final_job.bash`, which runs `butler aggregate-graph`
+to bring the outputs of the quantum-backed jobs into the butler). This plugin
+runs it only when it is an ordinary job at the end of the DAG:
+
+```yaml
+finalJob:
+  whenRun: SUCCESS
+```
+
+With the BPS default, `whenRun: ALWAYS`, BPS keeps the final job outside the
+DAG and this plugin does not run it. The job outputs are then on disk but not
+registered in the butler until you run
+`<submitPath>/final_job.bash <qgraph file> <butlerConfig>` yourself.
+
+### Still tied to a shared filesystem
+
+- The queue: `submitPath` (payloads, queue directories, heartbeats, logs,
+  `run_worker.sh`) must be one POSIX directory seen by the submit host and
+  every worker, whichever access mode is used. Claims rely on atomic renames.
+  All access to it goes through `QueueLayout` in `queue.py`.
+- The plugin must be importable on the workers: installed in the image, or
+  set up by `envScript`.
+- Output files that a job writes to its working directory and expects the
+  WMS to copy back (`bps submitcmd` with `outputs`) are not supported;
+  `bps prepare` raises `NotImplementedError`.
+- Directories cannot be published to the endpoint.
+
 ## Queue layout
 
 Under each `submitPath`:
@@ -118,7 +213,7 @@ Under each `submitPath`:
 | `logs/` | Per-job logs |
 | `workers/` | Worker heartbeats (`*.alive` JSON: `currentJob`, `sessionId`) |
 | `processing/<job>.owner` | Claim ownership sidecar (`workerId`, `sessionId`, `claimedAt`) |
-| `dag.json` / `run.yaml` / `state.json` | DAG, config snapshot, report state |
+| `dag.json` / `run.yaml` / `state.json` | DAG, config snapshot (site settings, access mode, files to publish), report state |
 | `run_worker.sh` | Copied entrypoint for headless sessions |
 
 ## Development
