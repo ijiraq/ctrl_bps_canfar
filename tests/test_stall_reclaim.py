@@ -54,6 +54,21 @@ def test_cpu_utilization_ratio():
     assert cpu_utilization({"requestedCPUCores": "0"}) is None
 
 
+def test_reclaim_stalled_skips_vanished_processing(tmp_path: Path):
+    site = CanfarSiteConfig(n_workers=0, stall_polls=1, stall_cpu_fraction=0.01)
+    layout = QueueLayout(tmp_path)
+    layout.ensure()
+    job = JobPayload(name="gone", label="t", command="true")
+    layout.write_payload(job)
+    layout.enqueue("gone")
+    claimed = layout.try_claim()
+    assert claimed is not None
+    path, _ = claimed
+    path.unlink()  # worker finished between list and read
+    pool = WorkerPool(tmp_path, site, FakeSession(), tmp_path / "run_worker.sh")
+    assert pool.reclaim_stalled_jobs(layout) == []
+
+
 def test_stall_requires_grace_then_n_polls(tmp_path: Path):
     site = CanfarSiteConfig(
         n_workers=1,

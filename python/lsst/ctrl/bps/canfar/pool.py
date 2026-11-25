@@ -230,7 +230,10 @@ class WorkerPool:
         active_sessions: set[str] = set()
 
         for path in layout.list_json(layout.processing):
-            job = layout.read_payload(path)
+            # Worker may rename processing/ -> processed|failed between list and read.
+            job = layout.try_read_payload(path)
+            if job is None:
+                continue
             owner = layout.owner_for_processing_job(job.name)
             if not owner:
                 continue

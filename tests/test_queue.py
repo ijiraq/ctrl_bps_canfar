@@ -67,3 +67,24 @@ def test_heartbeat_maps_current_job(tmp_path: Path):
     assert owner is not None
     assert owner["workerId"] == "w1"
     assert owner["sessionId"] == "sess-1"
+
+
+def test_try_read_payload_missing(tmp_path: Path):
+    layout = QueueLayout(tmp_path)
+    layout.ensure()
+    assert layout.try_read_payload(tmp_path / "processing" / "gone.json") is None
+
+
+def test_reclaim_orphan_skips_vanished_file(tmp_path: Path):
+    """Worker finished between list_json and read — must not crash the orchestrator."""
+    layout = QueueLayout(tmp_path)
+    layout.ensure()
+    job = JobPayload(name="race", label="x", command="true")
+    layout.write_payload(job)
+    layout.enqueue("race")
+    claimed = layout.try_claim()
+    assert claimed is not None
+    path, _ = claimed
+    # Simulate a concurrent finish: file is gone when reclaim runs.
+    path.unlink()
+    assert layout.reclaim_orphan_processing(grace_seconds=0) == []

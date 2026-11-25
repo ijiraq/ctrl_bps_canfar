@@ -155,6 +155,19 @@ class QueueLayout:
     def read_payload(self, path: Path) -> JobPayload:
         return JobPayload.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
+    def try_read_payload(self, path: Path) -> JobPayload | None:
+        """Read a payload, or ``None`` if it vanished mid-poll (worker finished/moved it)."""
+        try:
+            return self.read_payload(path)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            _LOG.warning("could not read %s: %s", path, exc)
+            return None
+        except json.JSONDecodeError as exc:
+            _LOG.warning("corrupt payload %s: %s", path, exc)
+            return None
+
     def record_attempt(self, path: Path) -> JobPayload:
         """Count one more start of the claimed job at ``path``.
 
@@ -445,14 +458,19 @@ class QueueLayout:
         }
         reclaimed: list[str] = []
         for path in self.list_json(self.processing):
-            job = self.read_payload(path)
+            job = self.try_read_payload(path)
+            if job is None:
+                continue
             if job.name in claimed_jobs:
                 continue
             owner = self.read_claim_owner(job.name)
             if owner and owner.get("workerId"):
                 # Owner sidecar exists but heartbeat gone — still wait for grace on claim mtime.
                 pass
-            age = now - path.stat().st_mtime
+            try:
+                age = now - path.stat().st_mtime
+            except FileNotFoundError:
+                continue
             if age < grace_seconds:
                 continue
             if self.reclaim_to_queue(job.name) is None:
