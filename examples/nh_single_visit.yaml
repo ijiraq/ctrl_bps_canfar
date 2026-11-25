@@ -60,7 +60,7 @@ site:
   canfar:
     image: images.canfar.net/lsst/sciplat-lab:latest_daily
     nWorkers: 1
-    cores: 2
-    ram: 8
+    cores: 1
+    ram: 4
     httpTimeout: 180
     httpRetries: 4
