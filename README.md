@@ -71,6 +71,7 @@ site:
     reclaimGraceSeconds: 120
     stallCpuFraction: 0.01
     stallPolls: 5
+    missingPolls: 3
     httpTimeout: 120
     httpRetries: 3
     envScript: /arc/projects/MyProject/env.sh
@@ -111,6 +112,13 @@ destroys that session and moves the job back to `queue/`. Workers publish the
 active job name in `workers/<id>.alive` (and a `processing/<job>.owner`
 sidecar) so claims can be mapped to sessions. Jobs left in `processing/` with
 no owning heartbeat are reclaimed after `reclaimGraceSeconds`.
+
+Each poll asks Skaha for the user's headless sessions in one list request
+(`Session.fetch`), whatever the number of workers. A worker absent from that
+list for `missingPolls` consecutive polls (default 3; 0 disables) is asked
+about directly; if Skaha answers that there is no such session, or that it
+ended, the worker is dropped and, with `replaceWorkers: true`, replaced. The
+replacement takes the lowest worker name not in use.
 
 ## Command lines and job files
 

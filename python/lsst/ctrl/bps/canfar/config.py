@@ -30,6 +30,9 @@ class CanfarSiteConfig:
     # Stall detection: cpuCoresInUse / requestedCPUCores below this for stall_polls.
     stall_cpu_fraction: float = 0.01
     stall_polls: int = 5
+    # Drop (and replace) a worker absent from the Skaha session list for this
+    # many consecutive polls, once Skaha confirms the session is gone. 0 = never.
+    missing_polls: int = 3
     # canfar.Session HTTP inactivity timeout (seconds). Library max is 300.
     http_timeout: int = 120
     # Retries for transient Skaha create/destroy failures (timeouts, etc.).
@@ -80,6 +83,9 @@ class CanfarSiteConfig:
             stall_polls=int(
                 data.get("stallPolls", data.get("stall_polls", cls.stall_polls))
             ),
+            missing_polls=int(
+                data.get("missingPolls", data.get("missing_polls", cls.missing_polls))
+            ),
             http_timeout=int(
                 data.get("httpTimeout", data.get("http_timeout", cls.http_timeout))
             ),
@@ -104,6 +110,7 @@ class CanfarSiteConfig:
             "reclaimGraceSeconds": self.reclaim_grace_seconds,
             "stallCpuFraction": self.stall_cpu_fraction,
             "stallPolls": self.stall_polls,
+            "missingPolls": self.missing_polls,
             "httpTimeout": self.http_timeout,
             "httpRetries": self.http_retries,
             "envScript": self.env_script,
@@ -170,6 +177,7 @@ def load_site_config(config: Any = None, compute_site: str | None = None) -> Can
             "reclaimGraceSeconds",
             "stallCpuFraction",
             "stallPolls",
+            "missingPolls",
             "httpTimeout",
             "httpRetries",
             "envScript",

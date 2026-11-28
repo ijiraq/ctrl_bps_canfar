@@ -16,6 +16,7 @@ site:
     reclaimGraceSeconds: 120
     stallCpuFraction: 0.01
     stallPolls: 5
+    missingPolls: 3
     httpTimeout: 120
     httpRetries: 3
     # Script the workers source for the project environment (path as seen by

@@ -88,3 +88,24 @@ def test_reclaim_orphan_skips_vanished_file(tmp_path: Path):
     # Simulate a concurrent finish: file is gone when reclaim runs.
     path.unlink()
     assert layout.reclaim_orphan_processing(grace_seconds=0) == []
+
+
+def test_list_json_lists_only_json_files_sorted(tmp_path: Path):
+    layout = QueueLayout(tmp_path)
+    layout.ensure()
+    for name in ("b.json", "a.json", "a.owner", "c.json.tmp", ".json"):
+        (layout.processing / name).write_text("{}\n", encoding="utf-8")
+    (layout.processing / "dir.json").mkdir()
+
+    assert layout.list_json(layout.processing) == [
+        layout.processing / "a.json",
+        layout.processing / "b.json",
+    ]
+
+
+def test_list_json_missing_directory(tmp_path: Path):
+    layout = QueueLayout(tmp_path)
+    assert layout.list_json(layout.queue) == []
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("x", encoding="utf-8")
+    assert layout.list_json(not_a_dir) == []

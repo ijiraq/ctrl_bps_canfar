@@ -8,10 +8,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import CanfarSiteConfig, load_site_config
+from .config import CanfarSiteConfig, load_site_config, sanitize_name
 from .pool import WorkerPool, default_session, default_worker_script
 from .queue import QueueLayout
-from .status import overall_run_state, state_for_location, summarize_job_states
+from .status import overall_run_state, summarize_job_states
 
 _LOG = logging.getLogger(__name__)
 
@@ -31,6 +31,9 @@ class Orchestrator:
         self.site = site
         self.dag = layout.read_dag()
         self.jobs: dict[str, Any] = dict(self.dag.get("jobs") or {})
+        self._sanitized: dict[str, str] = {
+            sanitize_name(name): name for name in self.jobs
+        }
         self.pruned: set[str] = set()
         worker_script = layout.root / "run_worker.sh"
         if not worker_script.is_file():
@@ -42,18 +45,50 @@ class Orchestrator:
             worker_script=worker_script,
         )
 
-    def parents_succeeded(self, job_name: str) -> bool:
+    def build_location_index(self) -> dict[str, str]:
+        """Map sanitized job filename stem -> queue location (one readdir per dir)."""
+        index: dict[str, str] = {}
+        for label, directory in (
+            ("queue", self.layout.queue),
+            ("processing", self.layout.processing),
+            ("processed", self.layout.processed),
+            ("failed", self.layout.failed),
+            ("payloads", self.layout.payloads),
+        ):
+            for path in self.layout.list_json(directory):
+                # First match wins; priority matches job_location()'s search order.
+                index.setdefault(path.stem, label)
+        return index
+
+    def _loc(self, job_name: str, index: dict[str, str]) -> str | None:
+        return index.get(sanitize_name(job_name))
+
+    def parents_succeeded(self, job_name: str, index: dict[str, str]) -> bool:
         parents = list(self.jobs[job_name].get("parents") or [])
         for parent in parents:
             if parent in self.pruned:
                 return False
-            if self.layout.job_location(parent) != "processed":
+            if self._loc(parent, index) != "processed":
                 return False
         return True
 
-    def mark_pruned_from_failures(self) -> None:
-        failed = {name for name, loc in self.layout.iter_terminal() if loc == "failed"}
-        failed |= self.pruned
+    def mark_pruned_from_failures(self, index: dict[str, str] | None = None) -> None:
+        """Propagate FAILED parents to descendants.
+
+        Uses the failed/ directory listing + DAG names (via sanitize map). Does
+        **not** open every processed payload — that wedged the orchestrator on
+        large /arc runs.
+        """
+        failed: set[str] = set(self.pruned)
+        for path in self.layout.list_json(self.layout.failed):
+            name = self._sanitized.get(path.stem)
+            if name is None:
+                payload = self.layout.try_read_payload(path)
+                if payload is None:
+                    continue
+                name = payload.name
+            failed.add(name)
+
         changed = True
         while changed:
             changed = False
@@ -64,47 +99,77 @@ class Orchestrator:
                 if parents & failed:
                     failed.add(name)
                     changed = True
-        self.pruned |= failed - {n for n, loc in self.layout.iter_terminal() if loc == "failed"}
 
-    def enqueue_ready(self) -> list[str]:
+        directly_failed = {
+            self._sanitized[path.stem]
+            for path in self.layout.list_json(self.layout.failed)
+            if path.stem in self._sanitized
+        }
+        self.pruned |= failed - directly_failed
+
+    def enqueue_ready(self, index: dict[str, str] | None = None) -> list[str]:
+        if index is None:
+            index = self.build_location_index()
         ready: list[str] = []
         for name in self.jobs:
             if name in self.pruned:
                 continue
-            location = self.layout.job_location(name)
-            if location != "payloads":
+            if self._loc(name, index) != "payloads":
                 continue
-            if self.parents_succeeded(name):
+            if self.parents_succeeded(name, index):
                 self.layout.enqueue(name)
                 ready.append(name)
-                _LOG.info("enqueued %s", name)
+                # Keep index coherent within this pass.
+                index[sanitize_name(name)] = "queue"
+        if ready:
+            _LOG.info("enqueued %d ready job(s)", len(ready))
+        else:
+            _LOG.debug("no ready jobs to enqueue")
         return ready
 
-    def work_remaining(self) -> bool:
-        self.mark_pruned_from_failures()
+    def work_remaining(self, index: dict[str, str] | None = None) -> bool:
+        if index is None:
+            index = self.build_location_index()
+            self.mark_pruned_from_failures(index)
         for name in self.jobs:
             if name in self.pruned:
                 continue
-            location = self.layout.job_location(name)
+            location = self._loc(name, index)
             if location in {None, "payloads", "queue", "processing"}:
                 return True
         return False
 
-    def locations(self) -> dict[str, str | None]:
-        return {name: self.layout.job_location(name) for name in self.jobs}
+    def locations(self, index: dict[str, str] | None = None) -> dict[str, str | None]:
+        if index is None:
+            index = self.build_location_index()
+        return {name: self._loc(name, index) for name in self.jobs}
 
-    def write_state(self, *, worker_ids: list[str] | None = None) -> dict[str, Any]:
-        locations = self.locations()
+    def write_state(
+        self,
+        *,
+        worker_ids: list[str] | None = None,
+        index: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        locations = self.locations(index)
         counts = summarize_job_states(locations, pruned=self.pruned)
         state = {
             "submitPath": str(self.layout.root),
-            "runState": getattr(overall_run_state(counts, cancel_requested=self.layout.cancel_requested()), "name", str(overall_run_state(counts))),
+            "runState": getattr(
+                overall_run_state(
+                    counts, cancel_requested=self.layout.cancel_requested()
+                ),
+                "name",
+                str(overall_run_state(counts)),
+            ),
             "jobLocations": locations,
             "pruned": sorted(self.pruned),
             "jobStateCounts": {
-                getattr(state, "name", str(state)): count for state, count in counts.items()
+                getattr(state, "name", str(state)): count
+                for state, count in counts.items()
             },
-            "workerIds": worker_ids if worker_ids is not None else list(self.pool.session_ids),
+            "workerIds": worker_ids
+            if worker_ids is not None
+            else list(self.pool.session_ids),
             "cancelRequested": self.layout.cancel_requested(),
             "updatedAt": time.time(),
         }
@@ -124,12 +189,15 @@ class Orchestrator:
                 return self.write_state()
 
             self.pool.reclaim_stalled_jobs(self.layout)
-            self.layout.reclaim_orphan_processing(grace_seconds=self.site.reclaim_grace_seconds)
-            self.mark_pruned_from_failures()
-            self.enqueue_ready()
-            remaining = self.work_remaining()
+            self.layout.reclaim_orphan_processing(
+                grace_seconds=self.site.reclaim_grace_seconds
+            )
+            index = self.build_location_index()
+            self.mark_pruned_from_failures(index)
+            self.enqueue_ready(index)
+            remaining = self.work_remaining(index)
             self.pool.maintain(work_remaining=remaining)
-            state = self.write_state()
+            state = self.write_state(index=index)
             if not remaining:
                 _LOG.info("all jobs finished")
                 # Let idle workers exit on their own, or destroy immediately.

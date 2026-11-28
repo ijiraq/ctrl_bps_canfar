@@ -23,6 +23,12 @@ _T = TypeVar("_T")
 
 
 class SessionClient(Protocol):
+    """Skaha client surface the pool needs.
+
+    ``fetch`` (list every session of the user in one request) is optional; when
+    the client has it the pool uses it instead of one ``info`` request per worker.
+    """
+
     def create(self, **kwargs: Any) -> list[str]: ...
 
     def info(self, ids: list[str], **kwargs: Any) -> list[dict[str, Any]]: ...
@@ -66,6 +72,27 @@ def _is_transient_skaha_error(exc: BaseException) -> bool:
     text = str(exc).lower()
     markers = ("timeout", "timed out", "temporarily", "connection", "reset", "unavailable")
     return any(m in name for m in markers) or any(m in text for m in markers)
+
+
+def _is_not_found(exc: BaseException) -> bool:
+    """True when Skaha answered 404 (no such session) for the request(s) in ``exc``.
+
+    ``canfar`` wraps per-ID HTTP failures in ``SessionRequestError.errors``.
+    """
+    candidates: list[Any] = [exc]
+    for attr in ("errors", "failures"):
+        nested = getattr(exc, attr, None)
+        if isinstance(nested, dict):
+            candidates.extend(nested.values())
+    found = False
+    for item in candidates:
+        code = getattr(getattr(item, "response", None), "status_code", None)
+        if code is None:
+            continue
+        if code != 404:
+            return False
+        found = True
+    return found
 
 
 def call_with_retries(
@@ -113,9 +140,44 @@ class WorkerPool:
     low_cpu_counts: dict[str, int] = field(default_factory=dict)
     # Sessions already past the first post-claim poll.
     seen_claim_poll: set[str] = field(default_factory=set)
+    # Consecutive polls in which Skaha's session list did not include the session.
+    missing_counts: dict[str, int] = field(default_factory=dict)
 
     def desired_size(self) -> int:
         return max(0, int(self.site.n_workers))
+
+    def _worker_name(self, ordinal: int) -> str:
+        return sanitize_name(f"{self.site.worker_name_prefix}-{self.submit_path.name}-{ordinal}")
+
+    def _free_worker_names(self, count: int) -> list[str]:
+        """Names for ``count`` new workers that no tracked worker is using.
+
+        The lowest free ordinals are taken, so a replacement reuses the name
+        of the worker it replaces and never that of a live one (two workers
+        with one name would share a heartbeat file).
+        """
+        used = {self.worker_name_by_session.get(sid) for sid in self.session_ids}
+        # A tracked session with no known name could hold any ordinal up to
+        # the pool size; start past them.
+        ordinal = len(self.session_ids) if None in used else 0
+        names: list[str] = []
+        while len(names) < count:
+            ordinal += 1
+            name = self._worker_name(ordinal)
+            if name in used:
+                continue
+            used.add(name)
+            names.append(name)
+        return names
+
+    def _forget(self, sid: str) -> None:
+        """Drop every per-session record of a session that is no longer a worker."""
+        if sid in self.session_ids:
+            self.session_ids.remove(sid)
+        self.worker_name_by_session.pop(sid, None)
+        self.low_cpu_counts.pop(sid, None)
+        self.seen_claim_poll.discard(sid)
+        self.missing_counts.pop(sid, None)
 
     def launch(self, *, count: int | None = None) -> list[str]:
         """Create ``count`` new headless workers (default: fill to nWorkers)."""
@@ -127,9 +189,7 @@ class WorkerPool:
         submit = shlex.quote(str(self.submit_path))
         layout = QueueLayout(self.submit_path)
         layout.ensure()
-        for index in range(need):
-            ordinal = len(self.session_ids) + index + 1
-            name = sanitize_name(f"{self.site.worker_name_prefix}-{self.submit_path.name}-{ordinal}")
+        for name in self._free_worker_names(need):
             args = f"{script} {submit} {self.site.idle_timeout} {self.site.poll_interval} {name}"
             env = {
                 "BPS_CANFAR_SUBMIT_PATH": str(self.submit_path),
@@ -168,43 +228,112 @@ class WorkerPool:
                 layout.write_worker_session(name, sid)
         return created
 
+    def _query_sessions(self) -> list[dict[str, Any]]:
+        """Ask Skaha about the workers: one list request when the client allows.
+
+        ``Session.fetch`` (``GET /session``) returns every session of the user
+        with the same fields as ``Session.info`` (``GET /session/<id>``), so the
+        cost of a poll no longer grows with the number of workers.
+        """
+        fetch = getattr(self.session, "fetch", None)
+        if callable(fetch):
+            return list(fetch(kind="headless") or [])
+        return list(self.session.info(list(self.session_ids)) or [])
+
     def _session_infos(self) -> dict[str, dict[str, Any]]:
+        """Skaha info for the tracked workers; empty when the request failed."""
+        return self._poll_sessions() or {}
+
+    def _poll_sessions(self) -> dict[str, dict[str, Any]] | None:
+        """Skaha info for the tracked workers, or ``None`` when the request failed."""
         if not self.session_ids:
             return {}
         try:
-            infos = self.session.info(list(self.session_ids))
+            infos = self._query_sessions()
         except Exception as exc:  # pragma: no cover - network failures
             _LOG.warning("worker info failed: %s", exc)
-            return {}
+            return None
+        tracked = set(self.session_ids)
         by_id: dict[str, dict[str, Any]] = {}
-        for item in infos or []:
+        for item in infos:
             sid = str(item.get("id") or item.get("sessionId") or "")
-            if sid:
-                by_id[sid] = item
-                name = item.get("name")
-                if name:
-                    self.worker_name_by_session.setdefault(sid, str(name))
+            # The list holds all of the user's headless sessions; keep this run's.
+            if sid not in tracked:
+                continue
+            by_id[sid] = item
+            name = item.get("name")
+            if name:
+                self.worker_name_by_session.setdefault(sid, str(name))
         return by_id
 
     def alive_ids(self) -> list[str]:
         if not self.session_ids:
             return []
-        status_by_id = self._session_infos()
-        if not status_by_id and self.session_ids:
-            # info failed; keep current list
+        status_by_id = self._poll_sessions()
+        if status_by_id is None:
+            # The request failed, which says nothing about the workers; keep them.
             return list(self.session_ids)
-        alive: list[str] = []
-        for sid in self.session_ids:
-            item = status_by_id.get(sid) or {}
+        for sid in list(self.session_ids):
+            item = status_by_id.get(sid)
+            if item is None:
+                if self._vanished(sid):
+                    self._forget(sid)
+                continue
+            self.missing_counts.pop(sid, None)
             status = str(item.get("status") or item.get("state") or "")
             if status.lower() in _TERMINAL:
-                self.low_cpu_counts.pop(sid, None)
-                self.seen_claim_poll.discard(sid)
-                self.worker_name_by_session.pop(sid, None)
-                continue
-            alive.append(sid)
-        self.session_ids = alive
+                self._forget(sid)
         return list(self.session_ids)
+
+    def _vanished(self, sid: str) -> bool:
+        """Count one poll without ``sid`` in Skaha's list; True once it is confirmed gone.
+
+        One poll without an entry is not proof the session ended (the list
+        may be incomplete), so the session is kept until it has been absent
+        for ``missingPolls`` consecutive polls *and* a direct request for it
+        says there is no such session, or that it reached a terminal state.
+        """
+        limit = int(self.site.missing_polls)
+        if limit <= 0:
+            return False
+        count = self.missing_counts.get(sid, 0) + 1
+        self.missing_counts[sid] = count
+        if count < limit:
+            return False
+        gone = self._confirm_gone(sid)
+        if gone:
+            _LOG.warning(
+                "worker session %s (%s) absent from Skaha for %d polls and confirmed gone; dropping it",
+                sid,
+                self.worker_name_by_session.get(sid, "?"),
+                count,
+            )
+            return True
+        if gone is False:
+            _LOG.warning(
+                "worker session %s was absent from the Skaha list for %d polls but is still running",
+                sid,
+                count,
+            )
+            self.missing_counts[sid] = 0
+        # gone is None: could not tell; ask again at the next poll.
+        return False
+
+    def _confirm_gone(self, sid: str) -> bool | None:
+        """Ask Skaha about one session: True gone, False alive, None unknown."""
+        try:
+            items = list(self.session.info([sid], errors="raise") or [])
+        except Exception as exc:
+            if _is_not_found(exc):
+                return True
+            _LOG.warning("could not check missing worker session %s: %s", sid, exc)
+            return None
+        for item in items:
+            if str(item.get("id") or item.get("sessionId") or "") != sid:
+                continue
+            status = str(item.get("status") or item.get("state") or "")
+            return status.lower() in _TERMINAL
+        return None
 
     def _session_for_owner(self, owner: dict[str, Any]) -> str | None:
         sid = owner.get("sessionId")
@@ -285,11 +414,7 @@ class WorkerPool:
                 )
             except Exception as exc:
                 _LOG.warning("destroy failed for stalled session %s: %s", sid, exc)
-            if sid in self.session_ids:
-                self.session_ids.remove(sid)
-            self.worker_name_by_session.pop(sid, None)
-            self.low_cpu_counts.pop(sid, None)
-            self.seen_claim_poll.discard(sid)
+            self._forget(sid)
             if layout.reclaim_to_queue(job.name) is not None:
                 reclaimed.append(job.name)
 
@@ -323,6 +448,7 @@ class WorkerPool:
             self.worker_name_by_session.clear()
             self.low_cpu_counts.clear()
             self.seen_claim_poll.clear()
+            self.missing_counts.clear()
 
 
 def default_session(*, timeout: int | None = None) -> Any:

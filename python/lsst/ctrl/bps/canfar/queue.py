@@ -241,9 +241,24 @@ class QueueLayout:
         return None
 
     def list_json(self, directory: Path) -> list[Path]:
-        if not directory.is_dir():
+        """Sorted ``*.json`` files of ``directory``.
+
+        The file type comes from the directory listing itself (``os.scandir``),
+        so this costs one readdir rather than a ``stat`` per file; with
+        hundreds of thousands of jobs on /arc the per-file stat dominated
+        every orchestrator poll and every worker claim.
+        """
+        try:
+            with os.scandir(directory) as entries:
+                names = [
+                    entry.name
+                    for entry in entries
+                    if entry.name.endswith(".json") and entry.name != ".json" and entry.is_file()
+                ]
+        except (FileNotFoundError, NotADirectoryError):
             return []
-        return sorted(p for p in directory.iterdir() if p.suffix == ".json" and p.is_file())
+        names.sort()
+        return [directory / name for name in names]
 
     def enqueue(self, job_name: str) -> Path:
         """Move a payload into ``queue/`` if it is still only in payloads/."""
